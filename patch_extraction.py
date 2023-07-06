@@ -70,21 +70,21 @@ class PatchDataset(Dataset):
         if base_magnification is None:
             print('Base magnification metadata for', pathology_number, 'is missing. Skipped extracting patches.' )
             return []
-                
+
         # Calculate the patch size for the target magnification
         scale_factor = self.base_magnification / self.target_magnification
         patch_size = tuple(int(scale_factor * dim) for dim in self.base_patch_size)
 
         downsample_factor = base_magnification / self.target_magnification
         best_level = wsi_img.get_best_level_for_downsample(downsample_factor)
-        
+
         level_downsample = wsi_img.level_downsamples[best_level]
         scaled_patch_size = tuple(int(np.ceil(ps / level_downsample)) for ps in patch_size)
 
         # Generate the ROI mask from the annotation
         roi_mask = annotation_to_roi_mask(annotation, wsi_img.dimensions[::-1])  # NOTE: dimensions are given in (width, height) but numpy arrays are in (height, width)
 
-        # Extract patches as well as their scaled coordiantes from the ROI 
+        # Extract patches as well as their scaled coordinates from the ROI
         patches_coords = extract_patches_within_roi(self, wsi_img, roi_mask, best_level, scaled_patch_size, overlap_percent=0, min_overlap_ratio=0.9, num_patches=self.num_patches)
 
         # Save the normalized patch if a save directory was provided
@@ -104,13 +104,13 @@ class PatchDataset(Dataset):
                 patches.append(patch)
                 coords.append(coord)
                 all_coords.append({'patch_id': patch_id, 'X': coord[0], 'Y': coord[1]})
-                
+
                 patch_array = patch.numpy().transpose(1, 2, 0)
                 # Normalize pixel values to the range of 0-255
                 patch_normalized = ((patch_array - patch_array.min()) / (patch_array.max() - patch_array.min())) * 255
                 # Convert to uint8
                 patch_normalized_uint8 = patch_normalized.astype('uint8')
-                patch_pil = Image.fromarray(patch_normalized_uint8)              
+                patch_pil = Image.fromarray(patch_normalized_uint8)
                 patch_pil.save(os.path.join(self.save_dir, patch_id + ".png"))
                 patch_index += 1
 
@@ -135,7 +135,7 @@ def annotation_to_roi_mask(annotation, image_dims):
         np.array: A 2D numpy array representing the binary mask of the ROI.
     """
     shapes = [(shape(feature['geometry']), 1) for feature in annotation['features']]
-    # Rasterize the list of shapes onto a binary mask which represent the ROI as a 2D numpy array, 
+    # Rasterize the list of shapes onto a binary mask which represent the ROI as a 2D numpy array,
     # where pixels within the ROI have a value of 1 and pixels outside the ROI have a value of 0.
     mask = rasterize(shapes, out_shape=image_dims)
     return mask
@@ -144,7 +144,7 @@ def annotation_to_roi_boxes(annotation):
     """Extracts the bounding boxes of the region of interest (ROI) from a GeoJSON annotation.
     Treat each annotation as a bounding box and slide a window of size patch_size across this bounding box.
     This approach doesn't ensure that patches don't cross the boundaries of the actual ROI polygons if the ROIs are irregularly shaped.
-    
+
     Args:
         annotation (dict): A dictionary containing the GeoJSON annotation.
 
@@ -197,7 +197,7 @@ def extract_patches_within_roi(self, wsi_img, roi_mask, best_level, scaled_patch
                     full_res_patch = np.array(wsi_img.read_region(coord, 0, scaled_patch_size))[:, :, :3]
                     patch = cv2.resize(full_res_patch, scaled_patch_size, interpolation=cv2.INTER_LINEAR)
 
-                # Ensure that the patch has the same size as base_patch_size 
+                # Ensure that the patch has the same size as base_patch_size
                 if patch.shape[:2] != self.base_patch_size:
                     # Resize the full-resolution patch to the target size using interpolation
                     patch = cv2.resize(patch, self.base_patch_size, interpolation=cv2.INTER_LINEAR)
@@ -228,9 +228,9 @@ def get_pathology_number(img_name):
     # If the name matches the second format (i.e., "S12-2343")
     elif re.match(r"^[A-Za-z]+\d+-\d+$", img_name):
         return img_name
-    else:  
+    else:
         return img_name
-    
+
 def load_data(hgg_folder, lgg_folder, labels_file):
     wsi_paths = []
     labels = []
@@ -271,7 +271,7 @@ transform = transforms.Compose([
     transforms.ToPILImage(),
     transforms.Lambda(apply_stain_normalization),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), # Standard normalization values since we use pretrained models
 ])
 
 # Create a folder to store the files that will be used/generated
@@ -298,10 +298,14 @@ valid_annotations_dict = {path: annotations[np.where(np.array(wsi_paths) == path
 test_annotations_dict = {path: annotations[np.where(np.array(wsi_paths) == path)[0][0]] for path in test_wsi_paths}
 
 # Create the training, validation and test datasets
-patch_size = 224 # NOTE: Changing the patch size here requires changing the patch_size in the patch classification script
+
+# NOTE: Changing the patch size here requires changing the patch_size in the patch classification script
+# NOTE: Resnet accepts input image size of (224 * 224). Changing patch_size will require adding Resize transform when loading patches before classification
+patch_size = 224
 target_magnification = 20 # NOTE: Changing the patch size here requires changing the patch_size in the visualization script
 num_patches = 200
-# NOTE: changing save_dir requires changing the list of directory names in get_item of PatchDataset
+# NOTE: Changing save_dir requires changing the list of directory names in get_item of PatchDataset
+# NOTE: When attempting to re-extract all the patches, delete the train, validation and test patches as WSIs with patches in any of these folders will not be extracted again
 train_dataset = PatchDataset(list(train_labels_dict.keys()), list(train_annotations_dict.values()), target_magnification = target_magnification, base_patch_size=(patch_size, patch_size), num_patches=num_patches, transform=transform, save_dir='train_patches')
 valid_dataset = PatchDataset(list(valid_labels_dict.keys()), list(valid_annotations_dict.values()), target_magnification = target_magnification, base_patch_size=(patch_size, patch_size), num_patches=num_patches, transform=transform, save_dir='valid_patches')
 test_dataset = PatchDataset(list(test_labels_dict.keys()), list(test_annotations_dict.values()), target_magnification = target_magnification, base_patch_size=(patch_size, patch_size), num_patches=num_patches, transform=transform, save_dir='test_patches')

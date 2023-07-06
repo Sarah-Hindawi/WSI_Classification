@@ -23,3 +23,6 @@ def get_base_magnification(wsi_img):
             except:
                 return None
     return base_magnification
+
+def is_valid_tile(patch, min_pixel_mean=50, max_pixel_mean=230, max_pixel_min=95):
+    return min_pixel_mean < patch.mean() < max_pixel_mean and patch.min() < max_pixel_min
