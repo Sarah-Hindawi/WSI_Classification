@@ -8,7 +8,6 @@ import pandas as pd
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
-from normalizeStaining import normalizeStaining
 from sklearn.model_selection import train_test_split
 from shapely.geometry import shape, Polygon
 from rasterio.features import rasterize
@@ -21,7 +20,7 @@ os.add_dll_directory(openslide_path)
 import openslide
 
 class PatchDataset(Dataset):
-    def __init__(self, wsi_paths, annotations, target_magnification, base_magnification=20.0, num_patches = 100, base_patch_size=(224, 224), transform=None, save_dir=None):
+    def __init__(self, wsi_paths, annotations, target_magnification, base_magnification=20.0, num_patches = 100, base_patch_size=(224, 224), transform=None, coords_file_path=None, save_dir=None, curr_dir=None):
         self.wsi_paths = wsi_paths
         self.annotations = annotations
         self.target_magnification = target_magnification
@@ -29,14 +28,16 @@ class PatchDataset(Dataset):
         self.num_patches = num_patches
         self.base_patch_size = base_patch_size
         self.transform = transform
-        self.save_dir = save_dir # Save the extracted patches after stain normalization
+        self.coords_file_path = coords_file_path
+        self.save_dir = save_dir # The names of the folders that will store extracted patches
+        self.curr_dir = curr_dir # Save the extracted patches after stain normalization
         self.saved_patches_wsi = set()  # Create a set to keep track of the WSIs for which the patches have already been saved
 
-        if save_dir is not None:
-            os.makedirs(save_dir, exist_ok=True)
+        if curr_dir is not None:
+            os.makedirs(curr_dir, exist_ok=True)
 
         # Remove previous coords files if exists
-        coords_file_path = os.path.join(files_path, "patches_coords.xlsx")
+        coords_file_path = self.coords_file_path
         if os.path.exists(coords_file_path):
             os.remove(coords_file_path)
 
@@ -54,7 +55,7 @@ class PatchDataset(Dataset):
 
         # Check if patches for the current WSI already exist in any of the sets
         # NOTE: Changing folder names in which the patches will be stored requires changing the list
-        for patches_path in ['train_patches', 'valid_patches', 'test_patches']:
+        for patches_path in save_dir:
             if os.path.exists(patches_path):
                 patch_files = os.listdir(patches_path)
                 if any(file.startswith(pathology_number) for file in patch_files):
@@ -88,7 +89,7 @@ class PatchDataset(Dataset):
         patches_coords = extract_patches_within_roi(self, wsi_img, roi_mask, best_level, scaled_patch_size, overlap_percent=0, min_overlap_ratio=0.9, num_patches=self.num_patches)
 
         # Save the normalized patch if a save directory was provided
-        if len(patches_coords) > 0 and self.save_dir is not None and wsi_path not in self.saved_patches_wsi:
+        if len(patches_coords) > 0 and self.curr_dir is not None and wsi_path not in self.saved_patches_wsi:
             self.saved_patches_wsi.add(wsi_path)  # Add the WSI to the set of saved WSIs, only one patch from each WSI is saved
 
             patches = []
@@ -111,18 +112,17 @@ class PatchDataset(Dataset):
                 # Convert to uint8
                 patch_normalized_uint8 = patch_normalized.astype('uint8')
                 patch_pil = Image.fromarray(patch_normalized_uint8)
-                patch_pil.save(os.path.join(self.save_dir, patch_id + ".png"))
+                patch_pil.save(os.path.join(self.curr_dir, patch_id + ".png"))
                 patch_index += 1
 
             # Save coordinates to an Excel file
             new_coords_df = pd.DataFrame(all_coords)
-            coords_file_path = os.path.join("files","patches_coords.xlsx") # NOTE: changing file name requires chaning it in classification_patches.py
 
-            if os.path.exists(coords_file_path):
-                existing_coords_df = pd.read_excel(coords_file_path)
+            if os.path.exists(self.coords_file_path): # if there is a file with the same name it was deleted in __init__
+                existing_coords_df = pd.read_excel(self.coords_file_path)
                 new_coords_df = pd.concat([existing_coords_df, new_coords_df], ignore_index=True)
 
-            new_coords_df.to_excel(coords_file_path, index=False)
+            new_coords_df.to_excel(self.coords_file_path, index=False)
 
             return patches
 
@@ -217,20 +217,6 @@ def extract_patches_within_roi(self, wsi_img, roi_mask, best_level, scaled_patch
 
     return patches_coords
 
-def get_pathology_number(img_name):
-    img_name = img_name.split()[0].strip()
-    # If the name matches the first format (i.e., "91S5432")
-    if re.match(r"^\d+[A-Za-z]+-\d+$", img_name) or re.match(r"^\d+[A-Za-z]+\d+$", img_name):
-        prefix_number = re.findall(r"^\d+", img_name)[0]
-        letter = re.findall(r"[A-Za-z]+", img_name)[0]
-        postfix_number = re.findall(r"\d+$", img_name)[0]
-        return f"{letter}{prefix_number.zfill(2)}-{postfix_number.zfill(4)}"
-    # If the name matches the second format (i.e., "S12-2343")
-    elif re.match(r"^[A-Za-z]+\d+-\d+$", img_name):
-        return img_name
-    else:
-        return img_name
-
 def load_data(hgg_folder, lgg_folder, labels_file):
     wsi_paths = []
     labels = []
@@ -248,7 +234,7 @@ def load_data(hgg_folder, lgg_folder, labels_file):
             if file.endswith('.svs'):
                 wsi_path = os.path.join(folder, file)
                 wsi_paths.append(wsi_path)
-                label = labels_dict[get_pathology_number(file)]
+                label = labels_dict[misc.get_pathology_number(file)]
                 labels.append(label)
 
                 # Assuming the annotation files are named as "<wsi_file>.geojson"
@@ -259,17 +245,9 @@ def load_data(hgg_folder, lgg_folder, labels_file):
 
     return wsi_paths, labels, annotations
 
-def apply_stain_normalization(patch):
-    try:
-        patch = np.array(patch)  # Convert the PIL.Image object to a NumPy array
-        normalized_patch, _, _ = normalizeStaining(patch)  # Perform H&E stain normalization
-        return Image.fromarray(normalized_patch)
-    except np.linalg.LinAlgError:
-        return patch
-
 transform = transforms.Compose([
     transforms.ToPILImage(),
-    transforms.Lambda(apply_stain_normalization),
+    transforms.Lambda(misc.apply_stain_normalization),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), # Standard normalization values since we use pretrained models
 ])
@@ -304,11 +282,13 @@ test_annotations_dict = {path: annotations[np.where(np.array(wsi_paths) == path)
 patch_size = 224
 target_magnification = 20 # NOTE: Changing the patch size here requires changing the patch_size in the visualization script
 num_patches = 200
+coords_file_path = os.path.join("files", "patches_coords") # NOTE: changing file name requires chaning it in classification_patches.py
+save_dir = ["train_patches", "valid_patches", "test_patches"]
 # NOTE: Changing save_dir requires changing the list of directory names in get_item of PatchDataset
 # NOTE: When attempting to re-extract all the patches, delete the train, validation and test patches as WSIs with patches in any of these folders will not be extracted again
-train_dataset = PatchDataset(list(train_labels_dict.keys()), list(train_annotations_dict.values()), target_magnification = target_magnification, base_patch_size=(patch_size, patch_size), num_patches=num_patches, transform=transform, save_dir='train_patches')
-valid_dataset = PatchDataset(list(valid_labels_dict.keys()), list(valid_annotations_dict.values()), target_magnification = target_magnification, base_patch_size=(patch_size, patch_size), num_patches=num_patches, transform=transform, save_dir='valid_patches')
-test_dataset = PatchDataset(list(test_labels_dict.keys()), list(test_annotations_dict.values()), target_magnification = target_magnification, base_patch_size=(patch_size, patch_size), num_patches=num_patches, transform=transform, save_dir='test_patches')
+train_dataset = PatchDataset(list(train_labels_dict.keys()), list(train_annotations_dict.values()), target_magnification = target_magnification, base_patch_size=(patch_size, patch_size), num_patches=num_patches, transform=transform, coords_file_path=coords_file_path, save_dir=save_dir, curr_dir=save_dir[0])
+valid_dataset = PatchDataset(list(valid_labels_dict.keys()), list(valid_annotations_dict.values()), target_magnification = target_magnification, base_patch_size=(patch_size, patch_size), num_patches=num_patches, transform=transform, coords_file_path=coords_file_path, save_dir=save_dir, curr_dir=save_dir[1])
+test_dataset = PatchDataset(list(test_labels_dict.keys()), list(test_annotations_dict.values()), target_magnification = target_magnification, base_patch_size=(patch_size, patch_size), num_patches=num_patches, transform=transform, coords_file_path=coords_file_path, save_dir=save_dir, curr_dir=save_dir[2])
 
 # Iterate over the datasets to trigger the patch extraction and storing
 for idx in range(len(train_dataset)):
