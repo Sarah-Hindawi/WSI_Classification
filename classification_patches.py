@@ -3,10 +3,12 @@ import os
 import torch
 import time
 import pickle
+from tqdm import tqdm
 import platform
 import numpy as np
 import pandas as pd
 from PIL import Image
+from collections import Counter
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import models
@@ -52,7 +54,7 @@ class ClassificationNetwork(nn.Module):
         return outputs, features
 
 class DirectoryPatchDataset(Dataset):
-    def __init__(self, directory, labels, coords, classes, transform=None, augmentation=None):
+    def __init__(self, directory, labels, coords, classes, transform=None, augmentation=None, is_balanced = False):
         self.directory = directory
         self.images = os.listdir(directory)
         self.labels = labels
@@ -70,16 +72,18 @@ class DirectoryPatchDataset(Dataset):
                 label = self.get_label(img)
                 self.image_list[self.classes[label]].append(img)
 
-        # Identify the majority class
-        majority_class = self.find_majority_class()
+        # If the dataset should be balanced for training purposes 
+        if is_balanced: 
+            # Identify the majority class
+            majority_class = self.find_majority_class()
 
-        # Upsample all classes to match the majority class
-        for class_name, images in self.image_list.items():
-            if class_name != majority_class:
-                count_diff = len(self.image_list[majority_class]) - len(images)
-                upsampling_indices = np.random.choice(len(images), size=count_diff, replace=True)
-                upsampling_images = [images[i] for i in upsampling_indices]
-                images.extend(upsampling_images)
+            # Upsample all classes to match the majority class
+            for class_name, images in self.image_list.items():
+                if class_name != majority_class:
+                    count_diff = len(self.image_list[majority_class]) - len(images)
+                    upsampling_indices = np.random.choice(len(images), size=count_diff, replace=True)
+                    upsampling_images = [images[i] for i in upsampling_indices]
+                    images.extend(upsampling_images)
 
         # Flatten the lists for easy access in __getitem__
         self.images = [image for images in self.image_list.values() for image in images]
@@ -167,9 +171,22 @@ coords_dict = OrderedDict(zip(df['patch_id'].str.strip(), zip(df['X'], df['Y']))
 classes = ['HGG', 'LGG']
 
 # Load datasets from saved patches
-train_dataset = DirectoryPatchDataset('train_patches', labels_dict, coords_dict, classes=classes, transform=transforms.ToTensor(), augmentation=data_augmentation)
+train_dataset = DirectoryPatchDataset('train_patches', labels_dict, coords_dict, classes=classes, transform=transforms.ToTensor(), augmentation=data_augmentation, is_balanced=True)
 valid_dataset = DirectoryPatchDataset('valid_patches', labels_dict, coords_dict, classes=classes)
 test_dataset = DirectoryPatchDataset('test_patches', labels_dict, coords_dict, classes=classes)
+
+# Print the number of occurances of each class in each set 
+train_labels = [train_dataset.get_label(filename) for filename in train_dataset.images]
+valid_labels = [valid_dataset.get_label(filename) for filename in valid_dataset.images]
+test_labels = [test_dataset.get_label(filename) for filename in test_dataset.images]
+
+train_label_counts = Counter(train_labels)
+valid_label_counts = Counter(valid_labels)
+test_label_counts = Counter(test_labels)
+
+print("Train dataset class distribution:", train_label_counts)
+print("Validation dataset class distribution:", valid_label_counts)
+print("Test dataset class distribution:", test_label_counts)
 
 # Create DataLoaders for training and test datasets
 batch_size = 6
@@ -294,8 +311,11 @@ for epoch in range(num_epochs):
     total_loss = 0.0
     total_items = 0
 
+    # Create tqdm iterator
+    train_loader_iter = tqdm(train_loader, desc="Training", leave=False)
+
     # Training loop
-    for idx, (patches, coords, patch_idxs, wsi_idxs, labels) in enumerate(train_loader):
+    for idx, (patches, coords, patch_idxs, wsi_idxs, labels) in enumerate(train_loader_iter):
         patches = torch.cat(patches, dim=0).to(device)
         labels = labels.clone().detach().to(device)
 
@@ -315,6 +335,9 @@ for epoch in range(num_epochs):
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
+
+        # Update tqdm progress bar
+        train_loader_iter.set_postfix({"Loss": loss.item()})
 
     # Compute average loss over the entire epoch
     running_loss = total_loss / total_items if total_items > 0 else 0.0
@@ -347,6 +370,8 @@ for epoch in range(num_epochs):
     train_roc_auc_formatted = f"{float(train_roc_auc):.3f}" if train_roc_auc != "N/A" else "N/A"
     valid_roc_auc_formatted = f"{float(valid_roc_auc):.3f}" if valid_roc_auc != "N/A" else "N/A"
 
+    # Print additional information after each epoch
+    train_loader_iter.close()
     print(f"Train Loss: {train_loss:.3f}, Train Acc: {train_acc:.3f}, Train F1: {train_f1:.3f}, Train ROC AUC: {train_roc_auc_formatted}")
     print(f"Valid Loss: {valid_loss:.3f}, Valid Acc: {valid_acc:.3f}, Valid F1: {valid_f1:.3f}, Valid ROC AUC: {valid_roc_auc_formatted}")
 
@@ -368,13 +393,13 @@ test_results_df = pd.DataFrame(test_results)
 
 files_path = 'files'
 
-train_results_df.to_excel(os.path.join(files_path, 'train_predictions.xlsx'))
+train_results_df.to_excel(os.path.join(files_path, 'train_predictions.xlsx'), index=False)
 pickle.dump(best_train_features, open(os.path.join(files_path, "train_features.pkl"), "wb" ))
 
-valid_results_df.to_excel(os.path.join(files_path, 'validation_predictions.xlsx'))
-pickle.dump(best_valid_features, open(os.path.join(files_path, "valid_features.pkl"), "wb" ))
+valid_results_df.to_excel(os.path.join(files_path, 'validation_predictions.xlsx'), index=False)
+pickle.dump(best_valid_features, open(os.path.join(files_path, "validation_features.pkl"), "wb" ))
 
-test_results_df.to_excel(os.path.join(files_path, 'test_predictions.xlsx'))
+test_results_df.to_excel(os.path.join(files_path, 'test_predictions.xlsx'), index=False)
 pickle.dump(test_features, open(os.path.join(files_path, "test_features.pkl"), "wb" ))
 
 print("Training complete in:", str(time.time() - start_time))
