@@ -1,12 +1,23 @@
 import re
-import os
-import normalizeStaining
+import torch
+from normalize_staining import normalizeStaining
 import numpy as np
 from PIL import Image
 from skimage.filters import threshold_otsu
 from skimage.morphology import binary_dilation, remove_small_holes
 from skimage.color import rgb2gray
 from skimage.feature import local_binary_pattern
+
+# --------------------------------------------------------------------------------
+# CONFIGURATION
+# --------------------------------------------------------------------------------
+def get_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
 
 # --------------------------------------------------------------------------------
 # WSI properties methdods
@@ -25,8 +36,18 @@ def get_pathology_number(img_name):
         return img_name
     else:
         return img_name
-    
+
+
 def get_base_magnification(wsi_img):
+    """
+    Retrieve the base magnification level of a WSI.
+
+    Args:
+        wsi_img (openslide.OpenSlide): The opened WSI image.
+
+    Returns:
+        float: The base magnification level of the WSI.
+    """
     try:
         base_magnification = float(wsi_img.properties['openslide.objective-power'])
     except KeyError:
@@ -45,6 +66,7 @@ def get_base_magnification(wsi_img):
                 return None
     return base_magnification
 
+
 # --------------------------------------------------------------------------------
 # Patch preprocessing methods
 # --------------------------------------------------------------------------------
@@ -57,6 +79,7 @@ def apply_stain_normalization(patch):
     except np.linalg.LinAlgError:
         return patch
 
+
 # --------------------------------------------------------------------------------
 # Patch Validatoin Methods
 # --------------------------------------------------------------------------------
@@ -65,27 +88,29 @@ def is_valid_patch(patch, min_pixel_mean=50, max_pixel_mean=230, max_pixel_min=9
     # patch must be normalized (0 - 255)
     return min_pixel_mean < patch.mean() < max_pixel_mean and patch.min() < max_pixel_min
 
+
 # Checks if a patch does not have enough tissue regions so it can be discarded.
 # TODO: Implement other preprocessing steps (e.g. is_contain_artifacts)
 def is_white_background(patch):
-        patch_array = np.array(patch)
-        mean_rgb = np.mean(patch_array, axis=(0, 1))
+    patch_array = np.array(patch)
+    mean_rgb = np.mean(patch_array, axis=(0, 1))
 
-        threshold = 200
-        is_white = np.all(mean_rgb > threshold)
+    threshold = 200
+    is_white = np.all(mean_rgb > threshold)
 
-        return is_white 
+    return is_white
+
 
 # Checks if a patch does not have enough tissue regions so it can be discarded.
 # TODO: Implement other preprocessing steps (e.g. is_contain_artifacts)
-def has_enough_tissue(patch, tissue_percent=80.0, near_zero_var_threshold=0.1, white_threshold=220, uniform_threshold=0.5):
-    
+def has_enough_tissue(patch, tissue_percent=80.0, near_zero_var_threshold=0.1, white_threshold=220,
+                      uniform_threshold=0.5):
     # Convert to grayscale
     grayscale_patch = rgb2gray(patch)
 
     # Apply color thresholding to filter out the white background
     # This is done on the grayscale image to simplify the process
-    mask = grayscale_patch < white_threshold / 255.0 # normalize to [0, 1] range for skimage images
+    mask = grayscale_patch < white_threshold / 255.0  # normalize to [0, 1] range for skimage images
     grayscale_patch = grayscale_patch * mask
 
     # Apply Otsu thresholding
@@ -109,7 +134,8 @@ def has_enough_tissue(patch, tissue_percent=80.0, near_zero_var_threshold=0.1, w
 
     # Implement a check for large uniform areas
     # We use local binary pattern for texture analysis
-    lbp = local_binary_pattern(grayscale_patch, 8, 1)  # Number of points in the circular LBP and radius are set to default values
+    lbp = local_binary_pattern(grayscale_patch, 8,
+                               1)  # Number of points in the circular LBP and radius are set to default values
     lbp_var = np.var(lbp)
 
     return enough_tissue and lbp_var > uniform_threshold

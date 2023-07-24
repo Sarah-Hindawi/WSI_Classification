@@ -3,14 +3,14 @@ import os
 import torch
 import time
 import pickle
-from tqdm import tqdm
-import platform
 import numpy as np
 import pandas as pd
-from PIL import Image
-from collections import Counter
 import torch.nn as nn
 import torch.optim as optim
+
+from PIL import Image
+from tqdm import tqdm
+from collections import Counter
 from torchvision import models
 from torchvision import transforms
 from collections import OrderedDict
@@ -20,11 +20,14 @@ from torch.utils.data import Dataset, DataLoader
 from torch.cuda.amp import GradScaler, autocast
 from sklearn.metrics import f1_score, roc_auc_score
 
+import constants
+
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
 torch.autograd.set_detect_anomaly(False)  # Disable anomaly detection
 
+
 class ClassificationNetwork(nn.Module):
-    def __init__(self, num_classes=2, dropout_rate=0.1):
+    def __init__(self, dropout_rate=0.1):
         super(ClassificationNetwork, self).__init__()
         # Load the pretrained resnet18 model
         resnet = models.resnet18(weights=ResNet18_Weights.DEFAULT)
@@ -38,7 +41,7 @@ class ClassificationNetwork(nn.Module):
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
             nn.Dropout(dropout_rate),
-            nn.Linear(num_features, num_classes)  # Binary classification
+            nn.Linear(num_features, constants.NUM_CLASSES)  # Binary classification
         )
 
         # Initialize weights of the new classifier layers
@@ -53,27 +56,27 @@ class ClassificationNetwork(nn.Module):
         outputs = self.classifier(features)
         return outputs, features
 
+
 class DirectoryPatchDataset(Dataset):
-    def __init__(self, directory, labels, coords, classes, transform=None, augmentation=None, is_balanced = False):
+    def __init__(self, directory, labels, coords, transform=None, augmentation=None, is_balanced=False):
         self.directory = directory
         self.images = os.listdir(directory)
         self.labels = labels
         self.coords = coords
-        self.classes = classes
         self.transform = transform if transform else transforms.ToTensor()
         self.augmentation = augmentation
 
         # Initialize image lists for each class
-        self.image_list = {class_name: [] for class_name in self.classes}
+        self.image_list = {class_name: [] for class_name in constants.CLASSES}
 
         # Populate image lists
         for img in self.images:
             if img.endswith('png'):
                 label = self.get_label(img)
-                self.image_list[self.classes[label]].append(img)
+                self.image_list[constants.CLASSES[label]].append(img)
 
-        # If the dataset should be balanced for training purposes 
-        if is_balanced: 
+        # If the dataset should be balanced for training purposes
+        if is_balanced:
             # Identify the majority class
             majority_class = self.find_majority_class()
 
@@ -107,7 +110,7 @@ class DirectoryPatchDataset(Dataset):
 
     def get_label(self, filename):
         # Get label from labels DataFrame
-        return self.classes.index(self.labels[self.get_pathology_num(filename)])
+        return constants.CLASSES.index(self.labels[self.get_pathology_num(filename)])
 
     def get_coords(self, file_path):
         filename = os.path.basename(file_path)
@@ -134,6 +137,7 @@ class DirectoryPatchDataset(Dataset):
 
         return image.unsqueeze(0), coords, patch_idx, wsi_idx, label
 
+
 def collate_fn(batch):
     images = []
     coords = []
@@ -148,7 +152,9 @@ def collate_fn(batch):
         wsi_idxs.append(wsi_idx)
         labels.append(label)
 
-    return images, torch.tensor(coords, dtype=torch.int), torch.tensor(patch_idxs, dtype=torch.int), torch.tensor(wsi_idxs, dtype=torch.int), torch.tensor(labels, dtype=torch.long)
+    return images, torch.tensor(coords, dtype=torch.int), torch.tensor(patch_idxs, dtype=torch.int), torch.tensor(
+        wsi_idxs, dtype=torch.int), torch.tensor(labels, dtype=torch.long)
+
 
 # Define a series of data augmentations
 # NOTE: Changing the model (other than ResNet) will require adding transforms.Resize to match the expected input size
@@ -159,23 +165,20 @@ data_augmentation = transforms.Compose([
 ])
 
 # Read labels file
-files_path = 'files'
-df = pd.read_excel(os.path.join(files_path, "Labels.xlsx"))
+df = pd.read_excel(constants.LABELS_PATH)
 labels_dict = OrderedDict(zip(df['Pathology Number'].str.strip(), df['Label'].str.strip()))
 
 # Read coords file
-df = pd.read_excel(os.path.join(files_path, "patches_coords.xlsx"))
+df = pd.read_excel(os.path.join(constants.FILES_PATH, constants.COORDS_FILE_NAME))
 coords_dict = OrderedDict(zip(df['patch_id'].str.strip(), zip(df['X'], df['Y'])))
 
-# Note: Changing patch image file name format in PatchExtraction.py requires changing this line
-classes = ['HGG', 'LGG']
-
 # Load datasets from saved patches
-train_dataset = DirectoryPatchDataset('train_patches', labels_dict, coords_dict, classes=classes, transform=transforms.ToTensor(), augmentation=data_augmentation, is_balanced=True)
-valid_dataset = DirectoryPatchDataset('valid_patches', labels_dict, coords_dict, classes=classes)
-test_dataset = DirectoryPatchDataset('test_patches', labels_dict, coords_dict, classes=classes)
+train_dataset = DirectoryPatchDataset(constants.TRAIN_PATH, labels_dict, coords_dict, transform=transforms.ToTensor(),
+                                      augmentation=data_augmentation, is_balanced=True)
+valid_dataset = DirectoryPatchDataset(constants.VALID_PATH, labels_dict, coords_dict)
+test_dataset = DirectoryPatchDataset(constants.TEST_PATH, labels_dict, coords_dict)
 
-# Print the number of occurances of each class in each set 
+# Print the number of occurances of each class in each set
 train_labels = [train_dataset.get_label(filename) for filename in train_dataset.images]
 valid_labels = [valid_dataset.get_label(filename) for filename in valid_dataset.images]
 test_labels = [test_dataset.get_label(filename) for filename in test_dataset.images]
@@ -190,26 +193,31 @@ print("Test dataset class distribution:", test_label_counts)
 
 # Create DataLoaders for training and test datasets
 batch_size = 6
+num_workers = 0
 
-if platform.system() == "Windows":
-    num_workers = 0
-else:
-    num_workers = torch.get_num_threads()
-
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=num_workers, pin_memory=True)
-valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=num_workers, pin_memory=True)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=num_workers, pin_memory=True)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn,
+                          num_workers=num_workers, pin_memory=True)
+valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn,
+                          num_workers=num_workers, pin_memory=True)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn,
+                         num_workers=num_workers, pin_memory=True)
 
 # Define the CNN
 model = ClassificationNetwork()
 
 # Set device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.cuda.empty_cache()
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+    torch.cuda.empty_cache()
 
-# Check if multiple GPUs are available and wrap model in nn.DataParallel if they are
-if torch.cuda.device_count() > 1:
-    model = nn.DataParallel(model)
+    # Check if multiple GPUs are available and wrap model in nn.DataParallel if they are
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
+
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
 
 model.to(device)
 
@@ -224,6 +232,7 @@ scaler = GradScaler()
 
 # Train the model
 num_epochs = 5
+
 
 def evaluate(loader, model, criterion, device):
     correct = 0
@@ -246,7 +255,7 @@ def evaluate(loader, model, criterion, device):
             loss = criterion(outputs, labels)
 
             # Accumulate loss
-            running_loss += loss.item() # Add the loss for the current batch of patches (num_patches)
+            running_loss += loss.item()  # Add the loss for the current batch of patches (num_patches)
 
             total += patches.shape[0]
             correct += (predicted_classes == labels).sum().item()
@@ -261,15 +270,18 @@ def evaluate(loader, model, criterion, device):
             probs = torch.softmax(outputs, dim=1)
             for i in range(patches.shape[0]):
                 new_row = {
-                    'WSI_id': list(labels_dict.items())[wsi_idxs[i]][0], # Get pathology number of the WSI that the patch belongs to
+                    'WSI_id': list(labels_dict.items())[wsi_idxs[i]][0],
+                    # Get pathology number of the WSI that the patch belongs to
                     'Patch_index': patch_idxs[i].item(),
                     'X': coords[i][0].item(),
                     'Y': coords[i][1].item(),
-                    classes[0]: probs[i][0].item(),
-                    classes[1]: probs[i][1].item(),
                     'True Label': labels[i].item(),
                     'Predicted Label': predicted_classes[i].item(),
                 }
+
+                for class_index, class_name in enumerate(constants.CLASSES):
+                    new_row[class_name] = probs[i][class_index].item()
+
                 results.append(new_row)
 
                 features_row = {
@@ -293,17 +305,15 @@ def evaluate(loader, model, criterion, device):
 
     return running_loss, correct / total, f1, roc_auc, results, features_results
 
+
 # Initialize the best accuracy variable and model path
 best_acc = 0.0
 best_model = None
-model_save_path = os.path.join(files_path, "best_model.pth")
 
 # Training loop
 start_time = time.time()
 
 for epoch in range(num_epochs):
-    num_classes = 2
-
     print(f"Epoch {epoch + 1}/{num_epochs}")
     model.train()
 
@@ -322,7 +332,7 @@ for epoch in range(num_epochs):
         optimizer.zero_grad()
 
         # Forward pass
-        with autocast(): # Enable automatic mixed precision training
+        with autocast():  # Enable automatic mixed precision training
             outputs, features = model(patches)
 
             loss = criterion(outputs, labels)
@@ -348,8 +358,10 @@ for epoch in range(num_epochs):
     # Calculate loss, accuracy, F1 score, and ROC AUC scores
     model.eval()
 
-    train_loss, train_acc, train_f1, train_roc_auc, train_results, train_features = evaluate(train_loader, model, criterion, device)
-    valid_loss, valid_acc, valid_f1, valid_roc_auc, valid_results, valid_features = evaluate(valid_loader, model, criterion, device)
+    train_loss, train_acc, train_f1, train_roc_auc, train_results, train_features = evaluate(train_loader, model,
+                                                                                             criterion, device)
+    valid_loss, valid_acc, valid_f1, valid_roc_auc, valid_results, valid_features = evaluate(valid_loader, model,
+                                                                                             criterion, device)
 
     # Save the model if it has the best validation accuracy so far
     if valid_acc > best_acc:
@@ -365,41 +377,43 @@ for epoch in range(num_epochs):
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'best_acc': best_acc,
-        }, model_save_path)
+        }, constants.BEST_MODEL_PATH)
 
     train_roc_auc_formatted = f"{float(train_roc_auc):.3f}" if train_roc_auc != "N/A" else "N/A"
     valid_roc_auc_formatted = f"{float(valid_roc_auc):.3f}" if valid_roc_auc != "N/A" else "N/A"
 
     # Print additional information after each epoch
     train_loader_iter.close()
-    print(f"Train Loss: {train_loss:.3f}, Train Acc: {train_acc:.3f}, Train F1: {train_f1:.3f}, Train ROC AUC: {train_roc_auc_formatted}")
-    print(f"Valid Loss: {valid_loss:.3f}, Valid Acc: {valid_acc:.3f}, Valid F1: {valid_f1:.3f}, Valid ROC AUC: {valid_roc_auc_formatted}")
+    print(
+        f"Train Loss: {train_loss:.3f}, Train Acc: {train_acc:.3f}, Train F1: {train_f1:.3f}, Train ROC AUC: {train_roc_auc_formatted}")
+    print(
+        f"Valid Loss: {valid_loss:.3f}, Valid Acc: {valid_acc:.3f}, Valid F1: {valid_f1:.3f}, Valid ROC AUC: {valid_roc_auc_formatted}")
 
 # Load the best model and evaluate on the test set
-checkpoint = torch.load(model_save_path)
+checkpoint = torch.load(constants.BEST_MODEL_PATH)
 model.load_state_dict(checkpoint['model_state_dict'])
 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
 model.eval()
 
-test_loss, test_acc, test_f1, test_roc_auc, test_results, test_features = evaluate(test_loader, best_model, criterion, device)
+test_loss, test_acc, test_f1, test_roc_auc, test_results, test_features = evaluate(test_loader, best_model, criterion,
+                                                                                   device)
 test_roc_auc_formatted = f"{float(test_roc_auc):.3f}" if test_roc_auc != "N/A" else "N/A"
-print(f"\nTesting the best mode:\nTest Loss: {test_loss:.3f}, Test Acc: {test_acc:.3f}, Test F1: {test_f1:.3f}, Test ROC AUC: {test_roc_auc_formatted}")
+print(
+    f"\nTesting the best mode:\nTest Loss: {test_loss:.3f}, Test Acc: {test_acc:.3f}, Test F1: {test_f1:.3f}, Test ROC AUC: {test_roc_auc_formatted}")
 
 # Save the best results to Excel files
 train_results_df = pd.DataFrame(best_train_results)
 valid_results_df = pd.DataFrame(best_valid_results)
 test_results_df = pd.DataFrame(test_results)
 
-files_path = 'files'
+train_results_df.to_excel(constants.TRAIN_PREDICTIONS, index=False)
+pickle.dump(best_train_features, open(constants.TRAIN_FEATURES, "wb"))
 
-train_results_df.to_excel(os.path.join(files_path, 'train_predictions.xlsx'), index=False)
-pickle.dump(best_train_features, open(os.path.join(files_path, "train_features.pkl"), "wb" ))
+valid_results_df.to_excel(constants.VALID_PREDICTIONS, index=False)
+pickle.dump(best_valid_features, open(constants.VALID_FEATURES, "wb"))
 
-valid_results_df.to_excel(os.path.join(files_path, 'validation_predictions.xlsx'), index=False)
-pickle.dump(best_valid_features, open(os.path.join(files_path, "validation_features.pkl"), "wb" ))
-
-test_results_df.to_excel(os.path.join(files_path, 'test_predictions.xlsx'), index=False)
-pickle.dump(test_features, open(os.path.join(files_path, "test_features.pkl"), "wb" ))
+test_results_df.to_excel(constants.TEST_PREDICTIONS, index=False)
+pickle.dump(test_features, open(constants.TEST_FEATURES, "wb"))
 
 print("Training complete in:", str(time.time() - start_time))

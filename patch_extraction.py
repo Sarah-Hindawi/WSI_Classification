@@ -1,223 +1,20 @@
-import os
-import cv2
-import re
 import json
-import misc
+import os
+import time
+
 import numpy as np
 import pandas as pd
-from PIL import Image
-from torch.utils.data import Dataset
-from torchvision import transforms
 from sklearn.model_selection import train_test_split
-from shapely.geometry import shape, Polygon
-from rasterio.features import rasterize
+from torchvision import transforms
+
+from patch_dataset import PatchDataset
+import constants
+import misc
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
 
-openslide_path = r"C:\Users\sarah\Documents\openslide-win64-20230414\bin"
-os.environ['PATH'] = openslide_path + ";" + os.environ['PATH']
-os.add_dll_directory(openslide_path)
-import openslide
 
-class PatchDataset(Dataset):
-    def __init__(self, wsi_paths, annotations, target_magnification, base_magnification=20.0, num_patches = 100, base_patch_size=(224, 224), transform=None, coords_file_path=None, save_dir=None, curr_dir=None):
-        self.wsi_paths = wsi_paths
-        self.annotations = annotations
-        self.target_magnification = target_magnification
-        self.base_magnification = base_magnification
-        self.num_patches = num_patches
-        self.base_patch_size = base_patch_size
-        self.transform = transform
-        self.coords_file_path = coords_file_path
-        self.save_dir = save_dir # The names of the folders that will store extracted patches
-        self.curr_dir = curr_dir # Save the extracted patches after stain normalization
-        self.saved_patches_wsi = set()  # Create a set to keep track of the WSIs for which the patches have already been saved
-
-        if curr_dir is not None:
-            os.makedirs(curr_dir, exist_ok=True)
-
-        # Remove previous coords files if exists
-        coords_file_path = self.coords_file_path
-        if os.path.exists(coords_file_path):
-            os.remove(coords_file_path)
-
-    def __len__(self):
-        return len(self.wsi_paths)
-
-    # Return patches from a WSI
-    def __getitem__(self, index):
-        wsi_path = self.wsi_paths[index]
-        annotation = self.annotations[index]
-
-        # Get the pathology number from the WSI path
-        img_name = os.path.basename(wsi_path)
-        pathology_number = get_pathology_number(img_name)
-
-        # Check if patches for the current WSI already exist in any of the sets
-        # NOTE: Changing folder names in which the patches will be stored requires changing the list
-        for patches_path in save_dir:
-            if os.path.exists(patches_path):
-                patch_files = os.listdir(patches_path)
-                if any(file.startswith(pathology_number) for file in patch_files):
-                    # Patches already exist for this WSI, so skip to the next
-                    print('Patches for', pathology_number, 'already exist. Skipped extracting patches.' )
-                    return []
-
-        # Load the WSI image
-        wsi_img = openslide.OpenSlide(wsi_path)
-
-        # Retrieve the base magnification from the WSI metadata
-        base_magnification = misc.get_base_magnification(wsi_img)
-        if base_magnification is None:
-            print('Base magnification metadata for', pathology_number, 'is missing. Skipped extracting patches.' )
-            return []
-
-        # Calculate the patch size for the target magnification
-        scale_factor = self.base_magnification / self.target_magnification
-        patch_size = tuple(int(scale_factor * dim) for dim in self.base_patch_size)
-
-        downsample_factor = base_magnification / self.target_magnification
-        best_level = wsi_img.get_best_level_for_downsample(downsample_factor)
-
-        level_downsample = wsi_img.level_downsamples[best_level]
-        scaled_patch_size = tuple(int(np.ceil(ps / level_downsample)) for ps in patch_size)
-
-        # Generate the ROI mask from the annotation
-        roi_mask = annotation_to_roi_mask(annotation, wsi_img.dimensions[::-1])  # NOTE: dimensions are given in (width, height) but numpy arrays are in (height, width)
-
-        # Extract patches as well as their scaled coordinates from the ROI
-        patches_coords = extract_patches_within_roi(self, wsi_img, roi_mask, best_level, scaled_patch_size, overlap_percent=0, min_overlap_ratio=0.9, num_patches=self.num_patches)
-
-        # Save the normalized patch if a save directory was provided
-        if len(patches_coords) > 0 and self.curr_dir is not None and wsi_path not in self.saved_patches_wsi:
-            self.saved_patches_wsi.add(wsi_path)  # Add the WSI to the set of saved WSIs, only one patch from each WSI is saved
-
-            patches = []
-            coords = []
-            all_coords = [] # Coordiantes for all the patches of all WSIs
-
-            patch_index = 1
-            for patch_coords in patches_coords:
-                patch = patch_coords['patch']
-                coord = patch_coords['coord']
-                patch_id = f"{pathology_number}_{patch_index}" # NOTE: Changing patch file name format requires changing extracting patch name in ClassificationWSI.py
-
-                patches.append(patch)
-                coords.append(coord)
-                all_coords.append({'patch_id': patch_id, 'X': coord[0], 'Y': coord[1]})
-
-                patch_array = patch.numpy().transpose(1, 2, 0)
-                # Normalize pixel values to the range of 0-255
-                patch_normalized = ((patch_array - patch_array.min()) / (patch_array.max() - patch_array.min())) * 255
-                # Convert to uint8
-                patch_normalized_uint8 = patch_normalized.astype('uint8')
-                patch_pil = Image.fromarray(patch_normalized_uint8)
-                patch_pil.save(os.path.join(self.curr_dir, patch_id + ".png"))
-                patch_index += 1
-
-            # Save coordinates to an Excel file
-            new_coords_df = pd.DataFrame(all_coords)
-
-            if os.path.exists(self.coords_file_path): # if there is a file with the same name it was deleted in __init__
-                existing_coords_df = pd.read_excel(self.coords_file_path)
-                new_coords_df = pd.concat([existing_coords_df, new_coords_df], ignore_index=True)
-
-            new_coords_df.to_excel(self.coords_file_path, index=False)
-
-            return patches
-
-def annotation_to_roi_mask(annotation, image_dims):
-    """Generates a binary mask of the ROI based on a GeoJSON annotation.
-    Args:
-        annotation (dict): A dictionary containing the GeoJSON annotation.
-        image_dims (tuple): The dimensions of the image (width, height).
-    Returns:
-        np.array: A 2D numpy array representing the binary mask of the ROI.
-    """
-    shapes = [(shape(feature['geometry']), 1) for feature in annotation['features']]
-    # Rasterize the list of shapes onto a binary mask which represent the ROI as a 2D numpy array,
-    # where pixels within the ROI have a value of 1 and pixels outside the ROI have a value of 0.
-    mask = rasterize(shapes, out_shape=image_dims)
-    return mask
-
-def annotation_to_roi_boxes(annotation):
-    """Extracts the bounding boxes of the region of interest (ROI) from a GeoJSON annotation.
-    Treat each annotation as a bounding box and slide a window of size patch_size across this bounding box.
-    This approach doesn't ensure that patches don't cross the boundaries of the actual ROI polygons if the ROIs are irregularly shaped.
-
-    Args:
-        annotation (dict): A dictionary containing the GeoJSON annotation.
-
-    Returns:
-        list: A list of bounding boxes representing the ROIs.
-    """
-    roi_boxes = []
-    for feature in annotation['features']:
-        geometry = feature['geometry']
-        if geometry['type'] == 'Polygon':
-            for coords in geometry['coordinates']:
-                polygon = Polygon(coords[:-1]) # Convert to Shapely polygon
-                roi_boxes.append(polygon.bounds) # Get the bounding box of the polygon
-
-    return roi_boxes
-
-def extract_patches_within_roi(self, wsi_img, roi_mask, best_level, scaled_patch_size, overlap_percent=20, min_overlap_ratio=0.7, num_patches=10):
-    """
-    Extracts patches from the region of interest (ROI) within a whole-slide image (WSI).
-
-    Args:
-        roi_mask (np.array): A binary mask of the ROI, where non-zero values indicate the region of interest.
-        best_level (int): The level of the WSI from which to extract the patches. This level provides the desired magnification.
-        scaled_patch_size (tuple): The size of the patches to extract, scaled to the target magnification level.
-        overlap_percent (int, optional): The desired overlap between patches, specified as a percentage. Defaults to 50.
-        min_overlap_ratio (float, optional): The minimum required overlap ratio between a patch and the ROI. Defaults to 0.7 (If at least 70% of the patch lies within the ROI, we accept it).
-        num_patches (int, optional): The maximum number of patches to extract.
-
-    Returns:
-        list: A list of extracted patches.
-
-    """
-    patches_coords = [] # Store a dictionary for each patch, where the key is the patch and the value is its coordiantes
-
-    stride = [int(dim * (1 - overlap_percent / 100)) for dim in scaled_patch_size]  # calculate stride based on the desired overlap
-    patch_area = np.prod(scaled_patch_size)
-    min_within_ROI = patch_area * min_overlap_ratio
-
-    for y in range(0, roi_mask.shape[0], stride[1]):
-        for x in range(0, roi_mask.shape[1], stride[0]):
-            roi_overlap = np.sum(roi_mask[y:y+scaled_patch_size[1], x:x+scaled_patch_size[0]])
-            if roi_overlap >= min_within_ROI: # Only extract patches that are mostly insdie the ROI based on min_overlap_ratio
-                coord = (x, y)
-
-                if best_level < len(wsi_img.level_dimensions):
-                    # If the desired level is within the available levels of the WSI
-                    patch = np.array(wsi_img.read_region(coord, best_level, scaled_patch_size))[:, :, :3]
-                else:
-                    # If the desired level is beyond the available levels of the WSI
-                    full_res_patch = np.array(wsi_img.read_region(coord, 0, scaled_patch_size))[:, :, :3]
-                    patch = cv2.resize(full_res_patch, scaled_patch_size, interpolation=cv2.INTER_LINEAR)
-
-                # Ensure that the patch has the same size as base_patch_size
-                if patch.shape[:2] != self.base_patch_size:
-                    # Resize the full-resolution patch to the target size using interpolation
-                    patch = cv2.resize(patch, self.base_patch_size, interpolation=cv2.INTER_LINEAR)
-
-                h, w, _ = patch.shape
-                if h == self.base_patch_size[1] and w == self.base_patch_size[0]:
-                    if self.transform:
-                        patch = self.transform(patch)
-                    patches_coords.append({'patch': patch, 'coord': coord})
-
-                if len(patches_coords) >= num_patches:
-                    break
-            if len(patches_coords) >= num_patches:
-                break
-        if len(patches_coords) >= num_patches:
-            break
-
-    return patches_coords
-
-def load_data(hgg_folder, lgg_folder, labels_file):
+def load_data(wsi_folders, labels_file):
     wsi_paths = []
     labels = []
     annotations = []
@@ -229,7 +26,7 @@ def load_data(hgg_folder, lgg_folder, labels_file):
     # Assuming WSIs are divided into two seperate folders (HGG and LGG)
     # Each folder has both svs files of the WSIs, and geojson files of the corresponding annotations
     # NOTE: both svs and geojson files should have the same name in order for the WSIs be mapped correctly to their annotations
-    for folder in [hgg_folder, lgg_folder]:
+    for folder in wsi_folders:
         for file in os.listdir(folder):
             if file.endswith('.svs'):
                 wsi_path = os.path.join(folder, file)
@@ -253,12 +50,11 @@ transform = transforms.Compose([
 ])
 
 # Create a folder to store the files that will be used/generated
-files_path = 'files'
-if files_path is not None:
-    os.makedirs(files_path, exist_ok=True)
+if constants.FILES_PATH is not None:
+    os.makedirs(constants.FILES_PATH, exist_ok=True)
 
 # Load data and create dataset
-wsi_paths, labels, annotations = load_data("PHGG", "LGG", os.path.join(files_path, "Labels.xlsx"))
+wsi_paths, labels, annotations = load_data(constants.WSI_PATHS, constants.LABELS_PATH)
 
 # Split the data at the WSI level
 seed = 42
@@ -276,19 +72,15 @@ valid_annotations_dict = {path: annotations[np.where(np.array(wsi_paths) == path
 test_annotations_dict = {path: annotations[np.where(np.array(wsi_paths) == path)[0][0]] for path in test_wsi_paths}
 
 # Create the training, validation and test datasets
-
+print('Started patch extraction.')
+start_time = time.time()
 # NOTE: Changing the patch size here requires changing the patch_size in the patch classification script
 # NOTE: Resnet accepts input image size of (224 * 224). Changing patch_size will require adding Resize transform when loading patches before classification
-patch_size = 224
-target_magnification = 20 # NOTE: Changing the patch size here requires changing the patch_size in the visualization script
-num_patches = 200
-coords_file_path = os.path.join("files", "patches_coords") # NOTE: changing file name requires chaning it in classification_patches.py
-save_dir = ["train_patches", "valid_patches", "test_patches"]
 # NOTE: Changing save_dir requires changing the list of directory names in get_item of PatchDataset
 # NOTE: When attempting to re-extract all the patches, delete the train, validation and test patches as WSIs with patches in any of these folders will not be extracted again
-train_dataset = PatchDataset(list(train_labels_dict.keys()), list(train_annotations_dict.values()), target_magnification = target_magnification, base_patch_size=(patch_size, patch_size), num_patches=num_patches, transform=transform, coords_file_path=coords_file_path, save_dir=save_dir, curr_dir=save_dir[0])
-valid_dataset = PatchDataset(list(valid_labels_dict.keys()), list(valid_annotations_dict.values()), target_magnification = target_magnification, base_patch_size=(patch_size, patch_size), num_patches=num_patches, transform=transform, coords_file_path=coords_file_path, save_dir=save_dir, curr_dir=save_dir[1])
-test_dataset = PatchDataset(list(test_labels_dict.keys()), list(test_annotations_dict.values()), target_magnification = target_magnification, base_patch_size=(patch_size, patch_size), num_patches=num_patches, transform=transform, coords_file_path=coords_file_path, save_dir=save_dir, curr_dir=save_dir[2])
+train_dataset = PatchDataset(list(train_labels_dict.keys()), list(train_annotations_dict.values()), transform=transform, save_dir=constants.TRAIN_PATH)
+valid_dataset = PatchDataset(list(valid_labels_dict.keys()), list(valid_annotations_dict.values()), transform=transform, save_dir=constants.VALID_PATH)
+test_dataset = PatchDataset(list(test_labels_dict.keys()), list(test_annotations_dict.values()), transform=transform, save_dir=constants.TEST_PATH)
 
 # Iterate over the datasets to trigger the patch extraction and storing
 for idx in range(len(train_dataset)):
@@ -300,4 +92,4 @@ for idx in range(len(valid_dataset)):
 for idx in range(len(test_dataset)):
     _ = test_dataset[idx]  # The extracted patches and corresponding labels
 
-print("Completed patch extraction.")
+print("Completed patch extraction in:", str(time.time() - start_time), 'seconds')
