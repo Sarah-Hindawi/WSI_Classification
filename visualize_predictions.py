@@ -2,36 +2,31 @@ import os
 import cv2
 import gc
 import imageio
+import openslide
 import matplotlib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-import misc
-import constants
+import misc 
+import config
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
-
-# os.environ['PATH'] = constants.OPENSLIDE_PATH + ";" + os.environ['PATH']
-# os.add_dll_directory(constants.OPENSLIDE_PATH)
-import openslide
-
-WSI_HEATMAPS_PATH = 'WSI_heatmaps2'
 
 
 def generate_heatmap(slide_path, patch_classifications, cmap, save_path, level=0, heatmap_level=2):
     slide = openslide.OpenSlide(slide_path)
-    patch_size = constants.PATCH_SIZE
+    patch_size = config.PATCH_SIZE
 
-    base_magnification = misc.get_base_magnification(slide)
-    downsample_factor = base_magnification / constants.TARGET_MAGNIFICATION
+    base_magnification = misc.get_base_magnification(slide, slide_path)
+    downsample_factor = base_magnification / config.TARGET_MAGNIFICATION
     level = slide.get_best_level_for_downsample(downsample_factor)
 
     if heatmap_level >= len(slide.level_dimensions):
         print('Skipping:', slide_path, 'as the spcified heatmap level doesn\'t exist.')
         return
 
-    heatmap_dims = slide.level_dimensions[heatmap_level]  # Increasing heatmap_level will further downsample the image
+    heatmap_dims = slide.level_dimensions[heatmap_level] # Increasing heatmap_level will further downsample the image
     xdim = slide.level_dimensions[level][0] // patch_size
     ydim = slide.level_dimensions[level][1] // patch_size
     downsample = slide.level_downsamples[level]
@@ -45,7 +40,7 @@ def generate_heatmap(slide_path, patch_classifications, cmap, save_path, level=0
         y = round((row['Y'] // downsample) / patch_size)
 
         pred_arr_hgg[y, x] = row['HGG']
-        heatmap_alpha[y, x] = 128
+        heatmap_alpha[y, x] = 128  # Make the heatmap semitransparent
 
     # Normalize the prediction arrays between 0 and 1, ignoring NaN values
     pred_arr_hgg = (pred_arr_hgg - np.nanmin(pred_arr_hgg)) / (np.nanmax(pred_arr_hgg) - np.nanmin(pred_arr_hgg))
@@ -54,7 +49,7 @@ def generate_heatmap(slide_path, patch_classifications, cmap, save_path, level=0
     # Show the probabilities of the patches to belong to class 0 (HGG)
     heatmap_hgg = cmap(pred_arr_hgg, bytes=True)  # This is now an RGBA image.
     heatmap_hgg[..., 3] = heatmap_alpha  # Use prediction confidence as alpha channel.
-    heatmap_hgg_resized = cv2.resize(heatmap_hgg, heatmap_dims, interpolation=cv2.INTER_NEAREST)
+    heatmap_hgg_resized = cv2.resize(heatmap_hgg, heatmap_dims, interpolation = cv2.INTER_NEAREST)
 
     # Read the whole slide image at the heatmap level
     slide_img = np.array(slide.read_region((0, 0), heatmap_level, heatmap_dims).convert("RGB"))
@@ -64,7 +59,6 @@ def generate_heatmap(slide_path, patch_classifications, cmap, save_path, level=0
     imageio.imwrite(f"{save_path}.jpg", slide_img)
 
     print(slide_path, 'is saved.')
-
 
 def overlay_image(img, img_overlay, pos, alpha_mask):
     """Overlay img_overlay on top of img at the position specified by
@@ -98,30 +92,29 @@ def overlay_image(img, img_overlay, pos, alpha_mask):
 
     return img_combined
 
-
 def process_images(patch_classifications_path, save_dir):
     # Load the classifications dataframe
     patch_classifications_df = pd.read_excel(patch_classifications_path)
 
     # Group the data by WSI_id
-    grouped = patch_classifications_df.groupby('WSI_id')
-
+    grouped = patch_classifications_df.groupby('wsi_id')
+    
     cmap = plt.cm.hot
     fig, ax = plt.subplots(figsize=(6, 1))
     fig.subplots_adjust(bottom=0.5)
     cbar = matplotlib.colorbar.ColorbarBase(ax, cmap=cmap, orientation='horizontal')
     cbar.set_label('Probability')
-    fig.savefig(os.path.join(constants.FILES_PATH, WSI_HEATMAPS_PATH, 'heatmap_legend.png'))
+    fig.savefig(os.path.join(config.FILES_PATH, config.HEATMAPS_PATH, 'heatmap_legend.png'))
 
     # For each WSI, create a heatmap
     for wsi_id, group in grouped:
-
-        label = group['True Label'].iloc[0]  # Get the label for the WSI
+       
+        label = group['true_label'].iloc[0]  # Get the label for the WSI
 
         if label == 0:
-            slide_directory = constants.HGG_PATH
+            slide_directory = config.LGG_WSI_PATH
         else:
-            slide_directory = constants.LGG_PATH
+            slide_directory = config.HGG_WSI_PATH
 
         # Find slide file based on WSI ID. The WSI name in the predictions.xlsx is only the id of the WSI (e.g. S1-1234, not S1-1234 H&E)
         slide_files = os.listdir(slide_directory)
@@ -134,16 +127,12 @@ def process_images(patch_classifications_path, save_dir):
         else:
             print(f"No slide image file found for WSI ID: {wsi_id}")
 
-
 def main():
-    save_dir = os.path.join(constants.FILES_PATH, WSI_HEATMAPS_PATH)
 
-    if save_dir is not None:
-        os.makedirs(save_dir, exist_ok=True)
+    save_dir = os.path.join(config.FILES_PATH, config.HEATMAPS_PATH)
 
     # Call the process_images function
-    process_images(constants.TEST_PREDICTIONS, save_dir)
-
+    process_images(config.TEST_PREDICTIONS, save_dir)
 
 if __name__ == "__main__":
     main()
