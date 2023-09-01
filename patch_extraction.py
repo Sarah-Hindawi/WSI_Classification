@@ -1,60 +1,20 @@
-import json
-import os
+import os 
 import time
 
 import numpy as np
-import pandas as pd
 from sklearn.model_selection import train_test_split
-from torchvision import transforms
 
-from patch_dataset import PatchDataset
-import constants
 import misc
+import config
+from patch_dataset import PatchDataset
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
 
+# Create directories to store extracted patches
+misc.setup_directories()
 
-def load_data(wsi_folders, labels_file):
-    wsi_paths = []
-    labels = []
-    annotations = []
-
-    # Load labels from an Excel file
-    df = pd.read_excel(labels_file)
-    labels_dict = dict(zip(df['Pathology Number'].str.strip(), df['Label'].str.strip()))
-
-    # Assuming WSIs are divided into two seperate folders (HGG and LGG)
-    # Each folder has both svs files of the WSIs, and geojson files of the corresponding annotations
-    # NOTE: both svs and geojson files should have the same name in order for the WSIs be mapped correctly to their annotations
-    for folder in wsi_folders:
-        for file in os.listdir(folder):
-            if file.endswith('.svs'):
-                wsi_path = os.path.join(folder, file)
-                wsi_paths.append(wsi_path)
-                label = labels_dict[misc.get_pathology_number(file)]
-                labels.append(label)
-
-                # Assuming the annotation files are named as "<wsi_file>.geojson"
-                annotation_path = os.path.join(folder, f"{os.path.splitext(file)[0]}.geojson")
-                with open(annotation_path, "r") as f:
-                    annotation = json.load(f)
-                annotations.append(annotation)
-
-    return wsi_paths, labels, annotations
-
-transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Lambda(misc.apply_stain_normalization),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), # Standard normalization values since we use pretrained models
-])
-
-# Create a folder to store the files that will be used/generated
-if constants.FILES_PATH is not None:
-    os.makedirs(constants.FILES_PATH, exist_ok=True)
-
-# Load data and create dataset
-wsi_paths, labels, annotations = load_data(constants.WSI_PATHS, constants.LABELS_PATH)
+# Load WSI paths, labels, and annotations
+wsi_paths, labels, annotations = misc.load_paths_labels_annotations(config.WSI_PATHS, config.LABELS_PATH)
 
 # Split the data at the WSI level
 seed = 42
@@ -74,13 +34,12 @@ test_annotations_dict = {path: annotations[np.where(np.array(wsi_paths) == path)
 # Create the training, validation and test datasets
 print('Started patch extraction.')
 start_time = time.time()
-# NOTE: Changing the patch size here requires changing the patch_size in the patch classification script
-# NOTE: Resnet accepts input image size of (224 * 224). Changing patch_size will require adding Resize transform when loading patches before classification
-# NOTE: Changing save_dir requires changing the list of directory names in get_item of PatchDataset
-# NOTE: When attempting to re-extract all the patches, delete the train, validation and test patches as WSIs with patches in any of these folders will not be extracted again
-train_dataset = PatchDataset(list(train_labels_dict.keys()), list(train_annotations_dict.values()), transform=transform, save_dir=constants.TRAIN_PATH)
-valid_dataset = PatchDataset(list(valid_labels_dict.keys()), list(valid_annotations_dict.values()), transform=transform, save_dir=constants.VALID_PATH)
-test_dataset = PatchDataset(list(test_labels_dict.keys()), list(test_annotations_dict.values()), transform=transform, save_dir=constants.TEST_PATH)
+transform = misc.get_transform()
+
+# NOTE: Resnet accepts input image size of (224 * 224). Changing patch_size might require adding Resize transform when loading patches before classification
+train_dataset = PatchDataset(list(train_labels_dict.keys()), list(train_annotations_dict.values()), max_num_patches=config.MAX_NUM_PATCHES, coords_file_path=config.COORDS_FILE_NAME, transform=transform, save_dir=config.TRAIN_PATCHES)
+valid_dataset = PatchDataset(list(valid_labels_dict.keys()), list(valid_annotations_dict.values()), max_num_patches=config.MAX_NUM_PATCHES, coords_file_path=config.COORDS_FILE_NAME, transform=transform, save_dir=config.VALID_PATCHES)
+test_dataset = PatchDataset(list(test_labels_dict.keys()), list(test_annotations_dict.values()), max_num_patches=config.MAX_NUM_PATCHES, coords_file_path=config.COORDS_FILE_NAME, transform=transform, save_dir=config.TEST_PATCHES)
 
 # Iterate over the datasets to trigger the patch extraction and storing
 for idx in range(len(train_dataset)):
@@ -92,4 +51,4 @@ for idx in range(len(valid_dataset)):
 for idx in range(len(test_dataset)):
     _ = test_dataset[idx]  # The extracted patches and corresponding labels
 
-print("Completed patch extraction in:", str(time.time() - start_time), 'seconds')
+print(f"Completed patch extraction for {len(config.CLASSES)} with patch size = {config.PATCH_SIZE} and magnification level = {config.TARGET_MAGNIFICATION} in: {time.time() - start_time} seconds.")
