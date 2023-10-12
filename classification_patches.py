@@ -24,12 +24,11 @@ import classification_networks
 from directory_patch_dataset import DirectoryPatchDataset
 
 def train(model, train_loader, valid_loader, labels_dict, criterion, optimizer, scheduler, scaler, device, num_epochs):
-    # Initialize the best accuracy variable and model path
+    
     best_acc = 0.0
     best_model = None
     early_stopping_counter = 0
 
-    # Training loop
     start_time = time.time()
 
     for epoch in range(num_epochs):
@@ -40,15 +39,12 @@ def train(model, train_loader, valid_loader, labels_dict, criterion, optimizer, 
         total_loss = 0.0
         total_items = 0
 
-        # Create tqdm iterator
-        train_loader_iter = tqdm(train_loader, desc="Training", leave=False)
+        # train_loader_iter = tqdm(train_loader, desc="Training", leave=False)
 
-        # Training loop
-        for idx, (patches, coords, patch_idxs, wsi_idxs, labels) in enumerate(train_loader_iter):
+        for idx, (patches, coords, patch_idxs, wsi_idxs, labels) in enumerate(train_loader):
             patches = torch.cat(patches, dim=0).to(device)
             labels = labels.clone().detach().to(device)
 
-            # Forward pass
             with autocast(): # Enable automatic mixed precision training
                 outputs, features = model(patches)
 
@@ -58,25 +54,20 @@ def train(model, train_loader, valid_loader, labels_dict, criterion, optimizer, 
                 total_loss += loss.item()
                 total_items += len(patches)
 
-            # Backward pass and optimization step
             optimizer.zero_grad()
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
 
-            # Update tqdm progress bar
-            train_loader_iter.set_postfix({"Loss": loss.item()})
+            # train_loader_iter.set_postfix({"Loss": loss.item()})
 
-        # Step the learning rate scheduler
         scheduler.step()
 
-        # Calculate loss, accuracy, F1 score, and ROC AUC scores
         train_loss, train_acc, train_f1, train_roc_auc, train_results, train_features = evaluate(model, train_loader, labels_dict, criterion, device)
         valid_loss, valid_acc, valid_f1, valid_roc_auc, valid_results, valid_features = evaluate(model, valid_loader, labels_dict, criterion, device)
 
-        # Save the model if it has the best validation accuracy so far
         if valid_acc > best_acc:
-            best_model = copy.deepcopy(model)  # save the best model
+            best_model = copy.deepcopy(model)
             best_acc = valid_acc
             best_train_results = train_results
             best_train_features = train_features
@@ -97,8 +88,7 @@ def train(model, train_loader, valid_loader, labels_dict, criterion, optimizer, 
         train_roc_auc_formatted = f"{float(train_roc_auc):.3f}" if train_roc_auc != "N/A" else "N/A"
         valid_roc_auc_formatted = f"{float(valid_roc_auc):.3f}" if valid_roc_auc != "N/A" else "N/A"
 
-        # Print additional information after each epoch
-        train_loader_iter.close()
+        # train_loader_iter.close()
         print(f"Train Loss: {train_loss:.3f}, Train Acc: {train_acc:.3f}, Train F1: {train_f1:.3f}, Train ROC AUC: {train_roc_auc_formatted}")
         print(f"Valid Loss: {valid_loss:.3f}, Valid Acc: {valid_acc:.3f}, Valid F1: {valid_f1:.3f}, Valid ROC AUC: {valid_roc_auc_formatted}")
 
@@ -110,7 +100,7 @@ def train(model, train_loader, valid_loader, labels_dict, criterion, optimizer, 
     return best_model, best_train_results, best_train_features, best_valid_results, best_valid_features
 
 
-def evaluate(model, dataloader, labels_dict, criterion, device, roc_plot_name=''):
+def evaluate(model, dataloader, labels_dict, criterion, device, roc_plot_name=None):
     correct = 0
     total = 0
     all_labels = []
@@ -134,16 +124,13 @@ def evaluate(model, dataloader, labels_dict, criterion, device, roc_plot_name=''
 
             loss = criterion(outputs, labels)
 
-            # Accumulate loss
             running_loss += loss.item() # Add the loss for the current batch of patches (num_patches)
 
             total += patches.shape[0]
             correct += (predicted_classes == labels).sum().item()
 
-            # Save labels and predictions for calculation of F1 score and ROC AUC score
             all_labels.extend(labels.cpu().numpy())
 
-            # Saving the softmax probabilities of the positive class to calculate ROC AUC score
             all_probs.extend(probs.cpu().numpy())
 
             if len(config.CLASSES) == 2:
@@ -175,7 +162,6 @@ def evaluate(model, dataloader, labels_dict, criterion, device, roc_plot_name=''
     # Normalize the loss by the total number of patches
     running_loss /= total
 
-    # Calculate F1 score and ROC AUC
     if len(config.CLASSES) == 2:
         threshold = 0.5
         f1 = f1_score(all_labels, np.array(positive_class_probs) > threshold, average='weighted')
@@ -195,7 +181,7 @@ def evaluate(model, dataloader, labels_dict, criterion, device, roc_plot_name=''
             fpr[i], tpr[i], _ = roc_curve(all_labels_bin[:, i], all_probs[:, i])
             roc_auc[i] = auc(fpr[i], tpr[i])
         
-        if roc_plot_name != '':
+        if roc_plot_name != None:
             misc.save_roc_auc_plot(fpr, tpr, roc_auc, config.ROC_PLOT_PATH)
         
         roc_auc = sum(roc_auc.values()) / len(roc_auc)
@@ -204,7 +190,7 @@ def evaluate(model, dataloader, labels_dict, criterion, device, roc_plot_name=''
 
 
 
-def test(model, best_model, test_loader, labels_dict, criterion, device, roc_plot_name=''):
+def test(model, best_model, test_loader, labels_dict, criterion, device, roc_plot_name=None):
     # Load the best model and evaluate on the test set
     checkpoint = torch.load(config.BEST_MODEL_PATH)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -216,13 +202,10 @@ def test(model, best_model, test_loader, labels_dict, criterion, device, roc_plo
 
     return test_results, test_features
 
-
-
-def main():
+def train_model(labels=config.LABELS_PATH):
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
     torch.autograd.set_detect_anomaly(False)  # Disable anomaly detection
 
-    # Define a series of data augmentations
     # NOTE: Changing the model (other than ResNet) may require adding transforms.Resize to match the expected input size
     data_augmentation = transforms.Compose([
         transforms.RandomHorizontalFlip(),
@@ -236,15 +219,12 @@ def main():
         ]),
     ])
 
-    # Read labels file
-    df = pd.read_excel(config.LABELS_PATH)
+    df = pd.read_excel(labels)
     labels_dict = OrderedDict(zip(df['Pathology Number'].str.strip(), df['Label'].str.strip()))
 
-    # Read coords file
-    df = pd.read_excel(os.path.join(config.FILES_PATH, config.COORDS_FILE_NAME))
+    df = pd.read_excel(config.COORDS_FILE_NAME)
     coords_dict = OrderedDict(zip(df['patch_id'].str.strip(), zip(df['X'], df['Y'])))
 
-    # Load datasets from saved patches
     train_dataset = DirectoryPatchDataset(config.TRAIN_PATCHES, labels_dict, coords_dict, transform=transforms.ToTensor(), augmentation=data_augmentation, is_balanced=True)
     valid_dataset = DirectoryPatchDataset(config.VALID_PATCHES, labels_dict, coords_dict)
     test_dataset = DirectoryPatchDataset(config.TEST_PATCHES, labels_dict, coords_dict)
@@ -262,18 +242,16 @@ def main():
     print("Validation dataset class distribution:", valid_label_counts)
     print("Test dataset class distribution:", test_label_counts)
 
-    # Create DataLoaders for training and test datasets
-    batch_size = 16
+    batch_size = 8
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=misc.custom_collate_fn, num_workers=0, pin_memory=True)
     valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, collate_fn=misc.custom_collate_fn, num_workers=0, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=misc.custom_collate_fn, num_workers=0, pin_memory=True)
 
-    # Define the CNN
     dropout_rate = config.dropout_rate
-    model = classification_networks.ClassificationResNet18()
+    model_type = 'ResNet-18'
+    model = classification_networks.ClassificationResNet(model=model_type, dropout_rate=dropout_rate)
 
-    # Set device
     device = misc.get_device()
 
     if device.type == 'cuda':
@@ -283,17 +261,29 @@ def main():
 
     model.to(device)
 
-    # Set loss function and optimizer
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    # criterion = nn.CrossEntropyLoss()
+    # optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+    weight = misc.get_class_weights(config.PATCHES_DIR_PATHS, labels_dict, file_type='png', seperator='_')
+    weight = weight.to(device) 
+    criterion = nn.CrossEntropyLoss(weight=weight)
+
+    # weight_decay = 0
+    # if model_type == 'ResNet-50':
+    weight_decay = 0.01 # If the model is resnet-50, apply regularization
+
+    optimizer = optim.Adam([
+    {'params': model.features.parameters(), 'lr': 1e-5, 'weight_decay': weight_decay},  # Lower learning rate for pre-trained layers
+    {'params': model.classifier.parameters(), 'lr': 1e-3, 'weight_decay': weight_decay}  # Higher learning rate for the new classifier layer
+    ])
 
     # Set the learning rate scheduler
-    scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
+    scheduler = StepLR(optimizer, step_size=10, gamma=0.7)
 
     scaler = GradScaler()
     
     num_epochs = 15
-    
+
     # Train the model
     best_model, best_train_results, best_train_features, best_valid_results, best_valid_features = train(model, train_loader, valid_loader, labels_dict, criterion, optimizer, scheduler, scaler, device, num_epochs)
     test_results, test_features = test(model, best_model, test_loader, labels_dict, criterion, device, roc_plot_name='roc_auc_plot.png')
@@ -312,7 +302,7 @@ def main():
     test_results_df.to_excel(config.TEST_PREDICTIONS, index=False)
     pickle.dump(test_features, open(config.TEST_FEATURES, "wb"))
 
-    print(f"Completed saving features/predictions using ResNet18, 10 unnanoated slides.")
+    print(f"Completed saving all the predictions and feature vectors.")
 
 if __name__ == "__main__":
-    main()
+    train_model(labels=config.LABELS_PATH)

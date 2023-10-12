@@ -5,7 +5,8 @@ from PIL import Image
 from torchvision import transforms
 from torch.utils.data import Dataset
 
-import config 
+import config
+import misc 
 
 class DirectoryPatchDataset(Dataset):
     def __init__(self, directory, labels, coords, transform=None, augmentation=None, is_balanced = False):
@@ -46,22 +47,16 @@ class DirectoryPatchDataset(Dataset):
         majority_class = max(class_counts, key=class_counts.get)
         return majority_class
 
-    def get_pathology_num(self, file_path):
-        # Extract pathology number from filename which appears before an underscore (as defined in PatchExtraction.py)
-        # Note: Changing patch image file name format in PatchExtraction.py requires changing this line
-        filename = os.path.basename(file_path)
-        wsi_id = filename.split("_")[0]
-        return wsi_id
-
     def get_patch_index(self, file_path):
         filename = os.path.basename(file_path)
         patch_idx = int(os.path.splitext(filename.split("_")[1])[0])
         return patch_idx
 
     def get_label(self, filename):
+        pathology_num = misc.get_pathology_num_from_labels(filename, self.labels, match_labels=True, separator="_")
         # Get label from labels DataFrame
-        if self.labels and self.get_pathology_num(filename) in self.labels.keys():
-            return config.CLASSES.index(self.labels[self.get_pathology_num(filename)])
+        if self.labels and pathology_num in self.labels.keys():
+            return config.CLASSES.index(self.labels[pathology_num])
         else:
             return None
 
@@ -79,8 +74,10 @@ class DirectoryPatchDataset(Dataset):
         patch_idx = self.get_patch_index(image_path)
         coords = self.get_coords(image_path)
 
-        if self.labels and self.get_pathology_num(image_path) in self.labels.keys():
-            wsi_idx = list(self.labels.keys()).index(self.get_pathology_num(image_path))
+        pathology_num = misc.get_pathology_num_from_labels(image_path, self.labels, match_labels=True, separator="_")
+
+        if self.labels and pathology_num in self.labels.keys():
+            wsi_idx = list(self.labels.keys()).index(pathology_num)
             label = self.get_label(image_path)
         else:
             wsi_idx = label = None    

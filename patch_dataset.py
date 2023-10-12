@@ -18,7 +18,7 @@ from tissue_detection import TissueDetection
 import openslide
 
 class PatchDataset(Dataset):
-    def __init__(self, wsi_paths, annotations, max_num_patches=1000, coords_file_path=None, transform=None, save_dir=None):
+    def __init__(self, wsi_paths, annotations, max_num_patches=1000, coords_file_path=None, transform=None, save_dir=None, remove_coords=True):
         """
         Dataset class for extracting and providing patches from whole-slide images (WSIs).
 
@@ -38,9 +38,9 @@ class PatchDataset(Dataset):
         self.save_dir = save_dir
         self.saved_patches_wsi = set()  # Keep track of the WSIs for which the patches have already been saved
 
-        # # Remove previous coords files if exists
-        # if os.path.exists(self.coords_file_path):
-        #     os.remove(self.coords_file_path)
+        # Remove previous coords files if exists
+        if remove_coords and os.path.exists(self.coords_file_path):
+            os.remove(self.coords_file_path)
 
     def __len__(self):
         return len(self.wsi_paths)
@@ -59,7 +59,7 @@ class PatchDataset(Dataset):
         mask = rasterize(shapes, out_shape=image_dims)
         return mask
 
-    def extract_patches_within_roi(self, wsi_img, roi_mask, best_level, base_patch_size, scaled_patch_size, overlap_percent=20, min_overlap_ratio=0.7):
+    def extract_patches_within_roi(self, wsi_img, roi_mask, best_level, base_patch_size, scaled_patch_size, overlap_percent=20, roi_overlap_ration=0.7):
         """
         Extracts patches from the region of interest (ROI) within a whole-slide image (WSI).
 
@@ -79,7 +79,7 @@ class PatchDataset(Dataset):
 
         stride = [int(dim * (1 - overlap_percent / 100)) for dim in scaled_patch_size]  # calculate stride based on the desired overlap
         patch_area = np.prod(scaled_patch_size)
-        min_within_roi = patch_area * min_overlap_ratio
+        min_within_roi = patch_area * roi_overlap_ration
 
         for y in range(0, roi_mask.shape[0], stride[1]):
             for x in range(0, roi_mask.shape[1], stride[0]):
@@ -102,17 +102,20 @@ class PatchDataset(Dataset):
 
                     h, w, _ = patch.shape
                     if h == base_patch_size[1] and w == base_patch_size[0]:
-                        if self.transform:
-                            patch = self.transform(patch)
+                        if not misc.is_white_background(patch):
+                            if self.transform:
+                                try:
+                                    patch = self.transform(patch)
+                                except Exception:
+                                    continue # skip the patch
 
-                        patch_array = patch.numpy().transpose(1, 2, 0)
-                        # Normalize pixel values to the range of 0-255
-                        patch_normalized = ((patch_array - patch_array.min()) / (patch_array.max() - patch_array.min())) * 255
-                        # Convert to uint8
-                        patch = patch_normalized.astype('uint8')
+                            patch_array = patch.numpy().transpose(1, 2, 0)
+                            # Normalize pixel values to the range of 0-255
+                            patch_normalized = ((patch_array - patch_array.min()) / (patch_array.max() - patch_array.min())) * 255
+                            patch = patch_normalized.astype('uint8')
 
-                        if misc.is_valid_patch(patch):
-                            patches_coords.append({'patch': patch, 'coord': coord})
+                            if misc.is_valid_patch(patch):
+                                patches_coords.append({'patch': patch, 'coord': coord})
                     else:
                         print('Encoutered an issue while extracting patches from:', os.path.basename(wsi_img._filename))
 
@@ -123,30 +126,33 @@ class PatchDataset(Dataset):
             if self.max_num_patches and len(patches_coords) >= self.max_num_patches:
                 break
 
+        if len(patches_coords) == 0:
+            print('No patches were extracted from slide:', os.path.basename(wsi_img._filename))
+            
         return patches_coords
 
     # Return patches from a WSI
     def __getitem__(self, index):
         wsi_path = self.wsi_paths[index]
-        if self.annotations is not None:
+        if self.annotations and len(self.annotations) > index:
             annotation = self.annotations[index]
 
         base_patch_size = (config.PATCH_SIZE, config.PATCH_SIZE)
 
         # Get the pathology number from the WSI path
         img_name = os.path.basename(wsi_path)
-        pathology_number = misc.get_pathology_number(img_name)
+        pathology_number = misc.get_pathology_num_from_labels(img_name)
 
         # Check if patches for the current WSI already exist in any of the sets
-        # NOTE: Changing folder names in which the patches will be stored requires changing the list
-        for patches_path in [config.TRAIN_PATCHES, config.VALID_PATCHES, config.TEST_PATCHES, config.INFER_PATCHES]:
-            if os.path.exists(patches_path):
-                patch_files = os.listdir(patches_path)
-                if any(file.startswith(pathology_number) for file in patch_files):
-                    # Patches already exist for this WSI, so skip to the next
-                    print('Patches for', pathology_number, 'already exist in', patches_path + ' directory. Skipped extracting patches.' )
-                    return []
-        
+        # NOTE: Changing folder names in which the patches will be stored requires changing the list        
+        # for set in [config.TRAIN_PATCHES, config.VALID_PATCHES, config.TEST_PATCHES]:
+        #     if os.path.exists(set):
+        #         patches = os.listdir(set)
+        #         if any(file.startswith(pathology_number) for file in patches):
+        #             # Patches already exist for this WSI, so skip to the next
+        #             print('Patches for', pathology_number, 'already exist in', set + ' directory. Skipped extracting patches.' )
+        #             return []
+            
         print('Extracting patches for:', pathology_number)
 
         # Load the WSI image
@@ -166,29 +172,28 @@ class PatchDataset(Dataset):
         level_downsample = wsi_img.level_downsamples[best_level]
         scaled_patch_size = tuple(int(np.ceil(ps / level_downsample)) for ps in patch_size)
 
-        if self.annotations is not None:
+        if annotation is not None:
             # Generate the ROI mask from the annotation
             roi_mask = self.annotation_to_roi_mask(annotation, wsi_img.dimensions[::-1])  # NOTE: dimensions are given in (width, height) but numpy arrays are in (height, width)
         else:
             # Generate the tissue mask if there are no annotations
-            td = TissueDetection(wsi_img, best_level)
-            tissue_mask = td.generate_mask(return_mask=True)
+            td = TissueDetection(wsi_img)
+            tissue_mask = td.generate_mask(level = best_level, return_mask=True)
 
             if tissue_mask is None:
-                raise ('Tissue mask for', pathology_number, 'is missing. Skipped extracting patches.' )
+                raise ('Could not create a tissue mask for slide:', pathology_number, '. Skipping extracting patches...' )
             
             # Convert PIL Image mask to numpy array 
             roi_mask = np.array(tissue_mask)
 
         # Extract patches as well as their scaled coordinates from the ROI
-        patches_coords = self.extract_patches_within_roi(wsi_img, roi_mask, best_level, base_patch_size, scaled_patch_size, overlap_percent=0, min_overlap_ratio=0.7)
+        patches_coords = self.extract_patches_within_roi(wsi_img, roi_mask, best_level, base_patch_size, scaled_patch_size, overlap_percent=0, roi_overlap_ration=0.7)
 
         # Save the normalized patch if a save directory was provided
         if len(patches_coords) > 0 and self.save_dir is not None and wsi_path not in self.saved_patches_wsi:
             self.saved_patches_wsi.add(wsi_path)  # Add the WSI to the set of saved WSIs, only one patch from each WSI is saved
 
             patches = []
-            coords_X = []
             all_coords = []  # Coordinates for all the patches of all WSIs
 
             patch_index = 1
