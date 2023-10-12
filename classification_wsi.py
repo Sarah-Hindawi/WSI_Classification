@@ -1,8 +1,8 @@
+import pickle
 import numpy as np
 import pandas as pd
 import xgboost as xgb
 import matplotlib.pyplot as plt
-import numpy as np
 
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
@@ -46,7 +46,10 @@ def svm_classifier(x_train, y_train, x_valid, y_valid, x_test, y_test, wsi_ids_t
     test_preds = best_clf.predict(x_test)    
     test_prob_preds = best_clf.predict_proba(x_test)
 
-    display_results(y_test, test_preds, test_prob_preds)
+    # Save best model for future inference
+    pickle.dump(best_clf, open(c.SVM_MODEL, "wb"))
+
+    display_results(y_test, test_preds, test_prob_preds, wsi_ids_test)
 
     return best_clf
 
@@ -80,7 +83,9 @@ def random_forest_classifier(x_train, y_train, x_valid, y_valid, x_test, y_test,
     test_preds = best_clf.predict(x_test)    
     test_prob_preds = best_clf.predict_proba(x_test)
 
-    display_results(y_test, test_preds, test_prob_preds)
+    pickle.dump(best_clf, open(c.RANDOM_FOREST_MODEL, "wb"))
+
+    display_results(y_test, test_preds, test_prob_preds, wsi_ids_test)
 
     return best_clf
 
@@ -111,6 +116,8 @@ def xgboost_classifier(x_train, y_train, x_valid, y_valid, x_test, y_test):
             best_log_loss = current_log_loss
             best_lr = lr
             best_xgb_model = xgb_classifier
+
+    pickle.dump(best_xgb_model, open(c.XGBOOST_MODEL, "wb"))
 
     # Using the best model to predict on the test set
     test_preds = best_xgb_model.predict(x_test)
@@ -204,7 +211,7 @@ def cluster_dbscan(x_train, y_train, x_valid, y_valid, x_test, y_test):
         print(f"Adjusted Rand Index: {ari}")
 
 
-def display_results(y_test, test_preds, test_prob_preds):
+def display_results(y_test, test_preds, test_prob_preds, wsi_ids_test):
     accuracy = accuracy_score(y_test, test_preds)
     roc_auc = roc_auc_score(y_test, test_prob_preds, multi_class='ovr')
         
@@ -217,13 +224,11 @@ def display_results(y_test, test_preds, test_prob_preds):
 
 if __name__ == '__main__':
 
-    files_path = c.FILES_PATH
-
     train_features = pd.DataFrame(pd.read_pickle(c.TRAIN_AGG_FV))
     valid_features = pd.DataFrame(pd.read_pickle(c.VALID_AGG_FV))
     test_features = pd.DataFrame(pd.read_pickle(c.TEST_AGG_FV))
 
-    # Flatten and concatenate all tile-level feature vectors
+    # Flatten and concatenate all feature vectors
     x_train = np.concatenate(train_features['features'].tolist()).reshape(-1, 512)
     x_valid = np.concatenate(valid_features['features'].tolist()).reshape(-1, 512)
     x_test = np.concatenate(test_features['features'].tolist()).reshape(-1, 512)
@@ -234,4 +239,4 @@ if __name__ == '__main__':
 
     wsi_ids_test = test_features['wsi_id'].tolist() # To display the WSIs that were misclassified
 
-    random_forest_classifier(x_train, y_train, x_valid, y_valid, x_test, y_test, wsi_ids_test)
+    xgboost_classifier(x_train, y_train, x_valid, y_valid, x_test, y_test)
