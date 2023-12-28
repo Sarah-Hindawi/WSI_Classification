@@ -5,18 +5,16 @@ import json
 import torch
 import pandas as pd
 import numpy as np
+import config as c
 import matplotlib.pyplot as plt
 import staintools
-
 from PIL import Image
 from collections import Counter
+from matplotlib.ticker import FuncFormatter
 from torchvision import transforms
 from sklearn.utils.class_weight import compute_class_weight
-
-import config as c
 from normalize_staining import normalizeStaining
 
-ref_patch = np.array(Image.open(c.STAIN_NORMALIZATION_REF))
 
 # --------------------------------------------------------------------------------
 # Set up
@@ -34,6 +32,22 @@ def setup_directories():
     for dir in directories:
         os.makedirs(dir, exist_ok=True)
 
+def setup_env_variables():
+    # Determine the available GPU memory
+    num_gpus = torch.cuda.device_count()
+    available_memory_gb = []
+
+    for gpu_id in range(num_gpus):
+        gpu = torch.cuda.get_device_properties(gpu_id)
+        available_memory_gb.append(gpu.total_memory / (1024 ** 3))
+
+    # Calculate the maximum memory usage per GPU
+    max_memory_gb = max(available_memory_gb)  # Use the GPU with the most memory
+    max_split_size_mb = int(max_memory_gb * 1024)  # Convert to MB
+
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = f"max_split_size_mb:{max_split_size_mb}"
+
+
 # --------------------------------------------------------------------------------
 # Load data
 # --------------------------------------------------------------------------------
@@ -48,14 +62,11 @@ def load_paths(dir_path):
 
     return wsi_paths
 
-def load_paths_labels_annotations(wsi_folders, labels_file):
+def load_paths_labels_annotations(wsi_folders, labels_dict):
     wsi_paths = []
     labels = []
     annotations = []
-
-    # Load labels from an Excel file
-    df = pd.read_excel(labels_file)
-    labels_dict = dict(zip(df['Pathology Number'].str.strip(), df['Label'].str.strip()))
+    slides_skipped = []
 
     # Each folder has both svs files of the WSIs, and geojson files of the corresponding annotations
     # NOTE: both svs and geojson files should have the same name in order for the WSIs be mapped correctly to their annotations
@@ -67,14 +78,14 @@ def load_paths_labels_annotations(wsi_folders, labels_file):
                 if pathology_num in labels_dict.keys():
                     label = labels_dict[pathology_num]
                 else:      
-                    print(f'Label was not found for {pathology_num}. Skipping this slide...')
+                    slides_skipped.append(pathology_num)
                     continue 
 
                 wsi_paths.append(wsi_path)
                 labels.append(label)
 
                 # Assuming the annotation files are named as "<wsi_file>.geojson"
-                annotation_path = os.path.join(folder, f"{os.path.splitext(file)[0]}.geojson")
+                annotation_path = os.path.join(c.ANNOTATIONS_PATH, f"{os.path.splitext(file)[0]}.geojson")
                 
                 annotation = None
                 if os.path.exists(annotation_path):
@@ -82,14 +93,33 @@ def load_paths_labels_annotations(wsi_folders, labels_file):
                         annotation = json.load(f)
                 annotations.append(annotation)
 
+    if slides_skipped:
+        print(f'Label was not fround for {len(slides_skipped)} slides. Slides that were skipped: {slides_skipped}')
+
     return wsi_paths, labels, annotations
 
 def load_predictions_features(predictions_path, features_path):
-    '''Returns a dataframe by merging the predictions with the features based on the WSI id and patch index.'''
+    '''Returns a dataframe by horizontally concatenating the predictions and features.'''
     preds = pd.read_excel(predictions_path)
     features = pd.DataFrame(pd.read_pickle(features_path))
 
-    patches_df = preds.merge(features, on=["wsi_id", "patch_index"]) # merge tables horizantally
+    # Concatenate dataframes horizontally
+    return pd.concat([preds, features.drop(columns=["wsi_id", "patch_index"])], axis=1)
+
+def load_avg_predictions_features(predictions_path, features_path):
+    '''Returns a dataframe by merging the predictions with the features based on the WSI id and patch index, averaging duplicates.'''
+    preds = pd.read_excel(predictions_path)
+    features = pd.DataFrame(pd.read_pickle(features_path))
+
+    # Average the probabilities for preds with the same wsi_id and patch_index (duplicates in the training set result of data augmentation)
+    avg_preds = preds.groupby(['wsi_id', 'patch_index']).mean().reset_index()
+
+    # Average the features for features with the same wsi_id and patch_index
+    avg_features = features.groupby(['wsi_id', 'patch_index']).agg(lambda x: list(np.mean(np.vstack(x), axis=0))).reset_index()
+
+    # Merge the averaged predictions and features
+    patches_df = avg_preds.merge(avg_features, on=["wsi_id", "patch_index"]) # merge tables horizontally
+
     return patches_df
 
 def get_mrn_for_pathology_num(pathology_num, df, columns):
@@ -104,28 +134,44 @@ def get_mrn_for_pathology_num(pathology_num, df, columns):
         
 
 # --------------------------------------------------------------------------------
-# WSI properties methdods
+# WSI properties methods
 # --------------------------------------------------------------------------------
 
-def get_pathology_num_from_labels(img_name, labels_dict = None, match_labels = False, separator = ' '):
-    img_name = os.path.basename(img_name).split(separator)[0].strip() # e.g. "S60-1234 A2.svs" => "S60-1234"
+def get_pathology_num_from_labels(slide_id, labels_dict = None, match_labels = False, separator = ' '):
+    slide_id = os.path.basename(slide_id).split(separator)[0].strip().split()[0] # e.g. "S60-1234 A2.svs" => "S60-1234"
 
-    if labels_dict and img_name in labels_dict.keys():
-        return img_name
+    if labels_dict and slide_id in labels_dict.keys():
+        return slide_id
     
     # If the name matches the format "60S1234"
-    if re.match(r"^\d+[A-Za-z]+-\d+$", img_name) or re.match(r"^\d+[A-Za-z]+\d+$", img_name):
-        prefix_number = re.findall(r"^\d+", img_name)[0]
-        letter = re.findall(r"[A-Za-z]+", img_name)[0]
-        postfix_number = re.findall(r"\d+$", img_name)[0]
+    if re.match(r"^\d+[A-Za-z]+-\d+$", slide_id) or re.match(r"^\d+[A-Za-z]+\d+$", slide_id):
+        prefix_number = re.findall(r"^\d+", slide_id)[0]
+        letter = re.findall(r"[A-Za-z]+", slide_id)[0]
+        postfix_number = re.findall(r"\d+$", slide_id)[0]
         return f"{letter}{prefix_number.zfill(2)}-{postfix_number.zfill(4)}"
     
-    if labels_dict and match_labels and re.match(r"^[A-Za-z]+\d+-\d+$", img_name): # e.g. img_name is S60-123, also check for S60-0123 in Labels.xlsx
-        first_part = img_name[:img_name.index('-')]
-        second_part = img_name[img_name.index('-') + 1:]
-        return f"{first_part}-{second_part.zfill(4)}" # e.g. S60-123 => S30-0123
+    if labels_dict and match_labels and re.match(r"^[A-Za-z]+\d+-\d+$", slide_id): # e.g. img_name is S60-123, also check for S60-0123 in Labels.xlsx
+        first_part = slide_id[:slide_id.index('-')]
+        second_part = slide_id[slide_id.index('-') + 1:]
+        return f"{first_part}-{second_part.zfill(4)}" # e.g. S60-123 => S60-0123
 
-    return img_name
+    return slide_id
+
+def get_file_name_from_pathology_num(pathology_num, dir_path = c.LGG_WSI_PATH, file_type = 'svs'):
+    slide_files_names =  [file for file in os.listdir(dir_path) if file.endswith(file_type)]
+    file_name = next((file for file in slide_files_names if file.startswith(pathology_num)), None)
+    if file_name is not None:
+        return file_name  
+    
+    ind =  pathology_num.index('-')
+    adj_pathology_num = pathology_num[:ind+1]+pathology_num[ind+1:].lstrip("0")
+    file_name = next((file for file in slide_files_names if file.startswith(adj_pathology_num)), None) # e.g. S60-0023 => S60-23
+    if file_name is not None:
+        return file_name  
+    else:
+        print(f'Could not find the correspnding slide image for: {pathology_num} in {c.LGG_WSI_PATH}. Excluding this file from the analysis...')
+        return None
+
 
 def get_base_magnification(wsi_img, id = ''):
     """
@@ -155,15 +201,36 @@ def get_base_magnification(wsi_img, id = ''):
             except:
                 return None
     return base_magnification
+    
+# --------------------------------------------------------------------------------
+# Get WSI info methods
+# --------------------------------------------------------------------------------
 
-def check_duplicate_slides(folders_paths):
-    """Checks if there are duplicate slides in any of the folders before patch extraction (same case different blocks)."""
+def check_duplicate_slides(folders_paths, case_match=True):
+    """
+    Checks if there are duplicate slides in any of the folders before patch extraction to avoid having two slides in different sets.
+    Used when we want the analysis to only include one slide per case
+
+    Args:
+        folders_paths (list): List of paths to folders containing the WSIs.
+        case_match (bool): Whether to check for exact matches in file names, or check only matches in case ID. 
+            If True, only checks if the first part of the slide name matches (case id only) (e.g. S00-1234 A1.svs == S00-1234 B1.svs).
+            If False, checks the entire slide name (case id + block id...) (e.g. S00-1234 A1.svs != S00-1234 B1.svs).
+
+    Returns:
+        dict: A dictionary containing the duplicate slides.
+    """
    
     slide_dict = {}
 
     for folder in folders_paths:
         for slide in [x for x in os.listdir(folder) if x.endswith('.svs')]:
-            slide_name = get_pathology_num_from_labels(slide)
+
+            if case_match:
+                slide_name = get_pathology_num_from_labels(slide) # Only check matches in case ID
+            else:
+                slide_name = slide
+
             path = os.path.join(folder, slide)
 
             if slide_name not in slide_dict:
@@ -178,8 +245,9 @@ def check_duplicate_slides(folders_paths):
         for slide, paths in duplicates.items():
             print("Slide:", slide)
             print("Found in paths:", paths)
-
-    return duplicates
+        return True
+    
+    return False
 
 def get_wsi_ids_labels(folders_paths, labels, file_type = 'svs', seperator = ' '):
     wsi_ids = {}
@@ -264,8 +332,8 @@ def custom_collate_fn(batch):
 # --------------------------------------------------------------------------------
 
 def is_valid_patch(patch, min_pixel_mean=50, max_pixel_mean=230, max_pixel_min=95, min_std_dev=10, min_saturation=25, max_value=240, otsu_ratio_threshold=0.55):
+    
     # NOTE: patch must be normalized (0 - 255) before calling this function, otherwise it won't work
-
     hsv_patch = cv2.cvtColor(patch, cv2.COLOR_RGB2HSV)
     s = hsv_patch[:, :, 1]
     v = hsv_patch[:, :, 2]
@@ -281,7 +349,7 @@ def is_valid_patch(patch, min_pixel_mean=50, max_pixel_mean=230, max_pixel_min=9
             v.mean() < max_value and  # Filter out very dark patches
             otsu_ratio < otsu_ratio_threshold)  # Ensure that the ratio of dark pixels is below a certain threshold
 
-def is_valid_patches(dir_path, starts_with):
+def is_valid_patch_list(dir_path, starts_with):
     files = [f for f in os.listdir(dir_path) if f.startswith(starts_with)]
     # files=['pen11.png']
     for file_name in files:
@@ -354,14 +422,18 @@ def save_stats_plots(data, plot_path, title='', xlabel='', ylabel='', log_scale 
 
     element_count = Counter(data)
 
-    elements = list(element_count.keys())
+    elements = [str(e) if not isinstance(e, (float, np.float64)) else 'N/A' for e in element_count.keys()]
+    # elements = [e if len(e)<20 else e[:20]+'..' for e in elements]
+
     frequencies = list(element_count.values())
 
     plt.bar(elements, frequencies)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
-    plt.title(title)
+    plt.title(title.capitalize())
     plt.xticks(rotation=90)
+    plt.gca().yaxis.set_major_formatter(FuncFormatter(lambda x, _: int(x)))
+
     if log_scale:
         plt.yscale('log')
 
@@ -369,4 +441,6 @@ def save_stats_plots(data, plot_path, title='', xlabel='', ylabel='', log_scale 
     plt.savefig(plot_path)
 
 if __name__ == "__main__":
-    pass
+
+    setup_directories()
+    print("Created patch directories.") 

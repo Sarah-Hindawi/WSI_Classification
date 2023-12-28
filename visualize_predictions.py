@@ -1,6 +1,7 @@
 import os
 import cv2
-import gc
+import misc 
+import config
 import imageio
 import openslide
 import matplotlib
@@ -8,55 +9,61 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-import misc 
-import config
-
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
 
+def generate_heatmap(slide_path, patch_classifications, label, cmap, save_path, heatmap_level=1):
 
-def generate_heatmap(slide_path, patch_classifications, cmap, save_path, level=0, heatmap_level=2):
-    slide = openslide.OpenSlide(slide_path)
-    patch_size = config.PATCH_SIZE
+    print('Generating heatmaps...')
+    
+    base_patch_size = (config.PATCH_SIZE, config.PATCH_SIZE)
 
-    base_magnification = misc.get_base_magnification(slide, slide_path)
+    wsi_img = openslide.OpenSlide(slide_path)
+
+    base_magnification = misc.get_base_magnification(wsi_img, slide_path)
+
     downsample_factor = base_magnification / config.TARGET_MAGNIFICATION
-    level = slide.get_best_level_for_downsample(downsample_factor)
+    best_level = wsi_img.get_best_level_for_downsample(downsample_factor)
 
-    if heatmap_level >= len(slide.level_dimensions):
-        print('Skipping:', slide_path, 'as the spcified heatmap level doesn\'t exist.')
+    level_downsample = wsi_img.level_downsamples[best_level]
+
+    patch_size = tuple(int(downsample_factor * dim) for dim in base_patch_size)
+    patch_size = tuple(int(np.ceil(ps / level_downsample)) for ps in patch_size)
+
+    if heatmap_level >= len(wsi_img.level_dimensions):
+        print('Skipping:', slide_path, 'as the specified heatmap level does not exist.')
         return
 
-    heatmap_dims = slide.level_dimensions[heatmap_level] # Increasing heatmap_level will further downsample the image
-    xdim = slide.level_dimensions[level][0] // patch_size
-    ydim = slide.level_dimensions[level][1] // patch_size
-    downsample = slide.level_downsamples[level]
+    # Increasing heatmap_level will further downsample the image
+    heatmap_dims = wsi_img.level_dimensions[heatmap_level] 
+    xdim = wsi_img.level_dimensions[best_level][0] // patch_size[0]
+    ydim = wsi_img.level_dimensions[best_level][1] // patch_size[1]
+    downsample = wsi_img.level_downsamples[best_level]
 
-    pred_arr_hgg = np.full((ydim, xdim), np.nan)
+    pred_arr = np.full((ydim, xdim), np.nan)
     heatmap_alpha = np.full((ydim, xdim), 0)
 
     for index, row in patch_classifications.iterrows():
-        gc.collect()
-        x = round((row['X'] // downsample) / patch_size)
-        y = round((row['Y'] // downsample) / patch_size)
+        x = int(round((row['X'] / downsample) / patch_size[0]))
+        y = int(round((row['Y'] / downsample) / patch_size[1]))
 
-        pred_arr_hgg[y, x] = row['HGG']
+        pred_arr[y, x] = row[label]
         heatmap_alpha[y, x] = 128  # Make the heatmap semitransparent
 
     # Normalize the prediction arrays between 0 and 1, ignoring NaN values
-    pred_arr_hgg = (pred_arr_hgg - np.nanmin(pred_arr_hgg)) / (np.nanmax(pred_arr_hgg) - np.nanmin(pred_arr_hgg))
-    # assert pred_arr_hgg.min() >= 0 and pred_arr_hgg.max() <= 1, "pred_arr_hgg has values outside [0, 1]"
+    pred_arr = (pred_arr - np.nanmin(pred_arr)) / (np.nanmax(pred_arr) - np.nanmin(pred_arr))
+    # assert pred_arr.min() >= 0 and pred_arr.max() <= 1, "pred_arr has values outside [0, 1]"
 
-    # Show the probabilities of the patches to belong to class 0 (HGG)
-    heatmap_hgg = cmap(pred_arr_hgg, bytes=True)  # This is now an RGBA image.
-    heatmap_hgg[..., 3] = heatmap_alpha  # Use prediction confidence as alpha channel.
-    heatmap_hgg_resized = cv2.resize(heatmap_hgg, heatmap_dims, interpolation = cv2.INTER_NEAREST)
+    # Show the probabilities of the patches to belong to the true class
+    heatmap = cmap(pred_arr, bytes=True)  # This is now an RGBA image.
+    heatmap[..., 3] = heatmap_alpha  # Use prediction confidence as alpha channel.
+    heatmap_resized = cv2.resize(heatmap, heatmap_dims, interpolation = cv2.INTER_NEAREST)
 
     # Read the whole slide image at the heatmap level
-    slide_img = np.array(slide.read_region((0, 0), heatmap_level, heatmap_dims).convert("RGB"))
+    slide_img = np.array(wsi_img.read_region((0, 0), heatmap_level, heatmap_dims).convert("RGB"))
 
     # Overlay the heatmap and the slide manually (preserves transparency)
-    slide_img = overlay_image(slide_img, heatmap_hgg_resized[:, :, :3], (0, 0), heatmap_hgg_resized[:, :, 3] / 255.0)
-    imageio.imwrite(f"{save_path}.jpg", slide_img)
+    slide_img = overlay_image(slide_img, heatmap_resized[:, :, :3], (0, 0), heatmap_resized[:, :, 3] / 255.0)
+    imageio.imwrite(f"{save_path}.png", slide_img)
 
     print(slide_path, 'is saved.')
 
@@ -106,33 +113,35 @@ def process_images(patch_classifications_path, save_dir):
     cbar.set_label('Probability')
     fig.savefig(os.path.join(config.FILES_PATH, config.HEATMAPS_PATH, 'heatmap_legend.png'))
 
+    slide_directory = config.LGG_WSI_PATH
+    slide_files = os.listdir(slide_directory)
+
     # For each WSI, create a heatmap
     for wsi_id, group in grouped:
        
-        label = group['true_label'].iloc[0]  # Get the label for the WSI
-
-        if label == 0:
-            slide_directory = config.LGG_WSI_PATH
-        else:
-            slide_directory = config.HGG_WSI_PATH
+        label = config.CLASSES[group['true_label'].iloc[0]]  # Get the label for the WSI
 
         # Find slide file based on WSI ID. The WSI name in the predictions.xlsx is only the id of the WSI (e.g. S1-1234, not S1-1234 H&E)
-        slide_files = os.listdir(slide_directory)
-        slide_filename = next((file for file in slide_files if wsi_id in file and 'svs' in file), None)
+        path_nums = [path_num.split()[0] for path_num in slide_files]
+   
+        if wsi_id not in path_nums: 
+            wsi_id = wsi_id[:wsi_id.index('-')+1] + wsi_id[wsi_id.index('-')+2:] # e.g. "S60-0234" => "S60-234"
+
+        slide_filename = next((file for file in slide_files if wsi_id in file.split()[0] and 'svs' in file), None)
 
         if slide_filename is not None:
             slide_path = os.path.join(slide_directory, slide_filename)
             save_path = os.path.join(save_dir, f"{wsi_id}")
-            generate_heatmap(slide_path, group, cmap, save_path)
+            generate_heatmap(slide_path, group, label, cmap, save_path)
         else:
             print(f"No slide image file found for WSI ID: {wsi_id}")
-
+            
 def main():
 
-    save_dir = os.path.join(config.FILES_PATH, config.HEATMAPS_PATH)
+    save_dir = config.HEATMAPS_PATH
 
-    # Call the process_images function
-    process_images(config.TEST_PREDICTIONS, save_dir)
+    os.makedirs(save_dir, exist_ok=True)
+    process_images(config.TEST_PREDICTIONS, save_dir=save_dir)
 
 if __name__ == "__main__":
     main()

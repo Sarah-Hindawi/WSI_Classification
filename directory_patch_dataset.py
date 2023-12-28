@@ -1,29 +1,32 @@
 import os
+import config
+import misc 
 import numpy as np
-
 from PIL import Image
 from torchvision import transforms
 from torch.utils.data import Dataset
 
-import config
-import misc 
 
 class DirectoryPatchDataset(Dataset):
-    def __init__(self, directory, labels, coords, transform=None, augmentation=None, is_balanced = False):
+    def __init__(self, directory, labels, coords, wsi_filenames, transform=None, augmentation=None, is_balanced = False):
         self.directory = directory
         self.images = os.listdir(directory)
         self.labels = labels
         self.coords = coords
-        self.transform = transform if transform else transforms.ToTensor()
+        self.wsi_filenames = wsi_filenames
         self.augmentation = augmentation
-
+        self.transform = transform if transform else transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+        
         # Initialize image lists for each class
         self.image_list = {class_name: [] for class_name in config.CLASSES}
 
         # Populate image lists
         for img in self.images:
             if self.labels and img.endswith('png'):
-                label = self.get_label(img)
+                pathology_num = misc.get_pathology_num_from_labels(img, self.labels, match_labels=True)
+                label = self.get_label(pathology_num)
                 self.image_list[config.CLASSES[label]].append(img)
 
         # If the dataset should be balanced for training purposes 
@@ -49,7 +52,7 @@ class DirectoryPatchDataset(Dataset):
 
     def get_patch_index(self, file_path):
         filename = os.path.basename(file_path)
-        patch_idx = int(os.path.splitext(filename.split("_")[1])[0])
+        patch_idx = int(filename.split(".")[-2][-1]) # S80-1234 A2_3.png' => get 3
         return patch_idx
 
     def get_label(self, filename):
@@ -70,17 +73,24 @@ class DirectoryPatchDataset(Dataset):
 
     def __getitem__(self, idx):
         image_path = os.path.join(self.directory, self.images[idx])
+        img_name = os.path.basename(image_path).rsplit('_', 1)[0] + '.svs'
         image = Image.open(image_path).convert('RGB')
         patch_idx = self.get_patch_index(image_path)
         coords = self.get_coords(image_path)
 
         pathology_num = misc.get_pathology_num_from_labels(image_path, self.labels, match_labels=True, separator="_")
 
+        if self.wsi_filenames and img_name in self.wsi_filenames:
+            wsi_idx = self.wsi_filenames.index(img_name)
+        else: 
+            wsi_idx = None
+            print(f'Could not find {img_name} in {config.WSI_FILENAMES}. Skipping...')
+
         if self.labels and pathology_num in self.labels.keys():
-            wsi_idx = list(self.labels.keys()).index(pathology_num)
-            label = self.get_label(image_path)
+            label = self.get_label(pathology_num)
         else:
-            wsi_idx = label = None    
+            label = None    
+            print(f'Could not find the label for slide: {img_name}. Skipping...')
 
         if self.transform:
             image = self.transform(image)

@@ -1,3 +1,5 @@
+# Code reference: https://www.nature.com/articles/s41379-021-00850-6
+
 import os
 import cv2
 import gc
@@ -88,10 +90,10 @@ class TissueDetection():
     gc.collect()
 
     try:
-      im = self.read_level(level).astype(np.float32)
+      im = self.read_level(level).astype(np.float16)
     except IndexError as e:
       level -= 1
-      im = self.read_level(level).astype(np.float32)
+      im = self.read_level(level).astype(np.float16)
       print(os.path.basename(self.slide_obj._filename), level, e)
 
     d = self.slide_obj.level_downsamples[level] 
@@ -101,6 +103,7 @@ class TissueDetection():
       temp = cv2.inRange(im, np.array([253,253,253]), np.array([255,255,255]))
       im[temp==255] = [0,0,0]
     
+    im = im.astype(np.float16) 
     grey_img = color.rgb2gray(im)
     del im  # Free up the memory of the original image
     grey_img[grey_img < 0.2] = 1 # get rid of marks on the slide
@@ -122,8 +125,7 @@ class TissueDetection():
     mask = grey
 
     # apply sequential binary morphology operations
-    #mask = cv2.erode(mask, iterations=2,
-    #    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(3,3)))
+    #mask = cv2.erode(mask, iterations=2, kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(3,3)))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, iterations=2,
                             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(3,3)))
     mask = cv2.dilate(mask, iterations=6,
@@ -140,6 +142,7 @@ class TissueDetection():
                                  )
       self.contour = Image.fromarray(contour.astype('uint8'), mode='L')
     
+    gc.collect()
     if return_mask:
       return self.tissue_mask
 
@@ -158,9 +161,9 @@ class TissueDetection():
     ratio = int(roi.size[0]/roi.size[1])
     roi = np.asarray(roi)
     mask = np.asarray(mask)
-    mask = mask.astype('float32')
+    mask = mask.astype('float16')
     fig = plt.figure(figsize = (size, size*ratio))
-    plt.suptitle((self.name, self.slide_obj.dimensions, self.bounding_box))
+    plt.suptitle((os.path.basename(self.slide_obj._filename), self.slide_obj.dimensions, self.bounding_box))
     ax = fig.add_subplot(1, 1, 1, xticks=[], yticks=[])
     plt.imshow(roi, interpolation='none')
     if overlay == 'mask':

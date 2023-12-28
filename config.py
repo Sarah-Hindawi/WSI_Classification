@@ -6,21 +6,22 @@ import os
 PARENT_PATH = os.getcwd()
 
 FILES_PATH = os.path.join(PARENT_PATH, 'files')
-LABELS_PATH = os.path.join(FILES_PATH, "labels_subtype.xlsx")
+LABELS_PATH = os.path.join(FILES_PATH, 'Labels.xlsx')
+WSI_FILENAMES = os.path.join(FILES_PATH, 'lgg_wsi_filenames.xlsx')
 STAIN_NORMALIZATION_REF = os.path.join(FILES_PATH, 'stain_normalization_ref.png')
 
 # Paths of the WSIs directories
 WSI_PARENT_PATH = os.path.join(PARENT_PATH, 'WSI')
 LGG_WSI_PATH = os.path.join(WSI_PARENT_PATH, 'LGG')
-HGG_WSI_PATH = os.path.join(WSI_PARENT_PATH, 'PHGG')
-NORMAL_WSI_PATH = os.path.join(WSI_PARENT_PATH, 'normal_brain')
+WSI_BLOCKS_PATH = os.path.join(LGG_WSI_PATH, 'blocks')
+ANNOTATIONS_PATH = os.path.join(LGG_WSI_PATH, 'annotations')
 INFER_WSI_PATH = os.path.join(WSI_PARENT_PATH, 'inference')
 
 PATCHES_PATH = os.path.join(PARENT_PATH, 'patches')
 VALIDATE_PATCHES_PATH = os.path.join(PATCHES_PATH, 'validate_patches')
 
 
-counter = '10x_subtype' # Update it when creating a differnet version of the same files instead of overwritting them
+counter = '10x_subtype5' # Update it when creating a differnet version of the same files instead of overwritting them
 
 # Files generated in patch_extraction
 TRAIN_PATCHES = os.path.join(PATCHES_PATH, 'train_patches' + counter)
@@ -32,8 +33,7 @@ COORDS_INFER_FILE_NAME = os.path.join(FILES_PATH, 'patches_coords_infer'+counter
 
 # Files generated in classification_patches
 dropout_rate = 0.5
-counter = '_drop' + str(dropout_rate * 100) + '_' + counter
-# counter = '_6classweighted_resent18_' + counter
+counter = '_drop' + str(dropout_rate * 100) +"_no_weight" + counter
 
 WEIGHTS_PATH = os.path.join(FILES_PATH, 'weights.pth') # Update for transfer learning from another weights file
 BEST_MODEL_PATH = os.path.join(FILES_PATH, 'best_model' + counter + '.pth')
@@ -69,7 +69,10 @@ XGBOOST_MODEL = os.path.join(FILES_PATH, 'best_xgboost'+counter+'.pkl')
 
 KMEANS_CLUSTER_PATH = os.path.join(FILES_PATH, 'kmeans_cluster'+counter+'.png')
 DBSCAN_CLUSTER_PATH = os.path.join(FILES_PATH, 'dbscan_cluster'+counter+'.png')
-PCA_TRUE_LABEL_PATH = os.path.join(FILES_PATH, 'pca_true'+counter+'.png')
+PCA_TRAIN_LABEL_PATH = os.path.join(FILES_PATH, 'pca_train'+counter+'.png')
+PCA_TEST_LABEL_PATH = os.path.join(FILES_PATH, 'pca_test'+counter+'.png')
+UMAP_TRAIN_LABEL_PATH = os.path.join(FILES_PATH, 'umap_train'+counter+'.png')
+UMAP_TEST_LABEL_PATH = os.path.join(FILES_PATH, 'umap_test'+counter+'.png')
 CONFUSION_MATRIX_PATH = os.path.join(FILES_PATH, 'confusion_matrix'+counter+'.png')
 
 # Files generated in infer_wsi
@@ -90,18 +93,22 @@ STATS_PLOT_PATH = os.path.join(FILES_PATH, 'stats'+counter+'.png')
 # ---------------------------------------------------------------------------
 # LISTS
 # ---------------------------------------------------------------------------
-# CLASSES = ['BN','LGG', 'HGG']
 CLASSES = ['BRAF fusion', 'BRAF SNV', 'FGFR altered']
-
-WSI_PATHS = [NORMAL_WSI_PATH, LGG_WSI_PATH, HGG_WSI_PATH]
-PATCHES_DIR_PATHS = [TRAIN_PATCHES, VALID_PATCHES, TEST_PATCHES]
+ALL_PATCHES = [TRAIN_PATCHES, TEST_PATCHES]
 
 # ---------------------------------------------------------------------------
 # NUMERICAL VALUES
 # ---------------------------------------------------------------------------
 PATCH_SIZE = 512
 TARGET_MAGNIFICATION = 10
-MAX_NUM_PATCHES = 6000
+MAX_NUM_PATCHES = 5000 
 FEATURE_VECTOR_SIZE = 128
 
 
+# ---------------------------------------------------------------------------
+# EXTENSION TO PATHS
+# ---------------------------------------------------------------------------
+def add_extension(path, additional_ext):
+    dir = os.path.dirname(path)
+    file_name, extension = os.path.splitext(os.path.basename(path))[0], os.path.splitext(os.path.basename(path))[1]
+    return os.path.join(dir, file_name + str(additional_ext) + extension)

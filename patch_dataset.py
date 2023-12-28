@@ -1,8 +1,8 @@
 import os
 import cv2
+import openslide
 import numpy as np
 import pandas as pd
-
 from PIL import Image
 from torchvision import transforms
 from rasterio.features import rasterize
@@ -13,12 +13,9 @@ import misc
 import config
 from tissue_detection import TissueDetection
 
-# os.environ['PATH'] = constants.OPENSLIDE_PATH + ";" + os.environ['PATH']
-# os.add_dll_directory(constants.OPENSLIDE_PATH)
-import openslide
 
 class PatchDataset(Dataset):
-    def __init__(self, wsi_paths, annotations, max_num_patches=1000, coords_file_path=None, transform=None, save_dir=None, remove_coords=True):
+    def __init__(self, wsi_paths, annotations, max_num_patches=1000, coords_file_path=None, transform=None, save_dir=None, remove_coords=True, accept_blocks=False):
         """
         Dataset class for extracting and providing patches from whole-slide images (WSIs).
 
@@ -36,6 +33,7 @@ class PatchDataset(Dataset):
         self.coords_file_path = coords_file_path
         self.transform = transform if transform else transforms.ToTensor()
         self.save_dir = save_dir
+        self.accept_blocks = accept_blocks
         self.saved_patches_wsi = set()  # Keep track of the WSIs for which the patches have already been saved
 
         # Remove previous coords files if exists
@@ -145,23 +143,23 @@ class PatchDataset(Dataset):
 
         # Check if patches for the current WSI already exist in any of the sets
         # NOTE: Changing folder names in which the patches will be stored requires changing the list        
-        # for set in [config.TRAIN_PATCHES, config.VALID_PATCHES, config.TEST_PATCHES]:
-        #     if os.path.exists(set):
-        #         patches = os.listdir(set)
-        #         if any(file.startswith(pathology_number) for file in patches):
-        #             # Patches already exist for this WSI, so skip to the next
-        #             print('Patches for', pathology_number, 'already exist in', set + ' directory. Skipped extracting patches.' )
-        #             return []
+        for set in config.ALL_PATCHES:
+            if os.path.exists(set):
+                patches = os.listdir(set)
+                if (not self.accept_blocks and any(file.startswith(pathology_number) for file in patches)) or (self.accept_blocks and any(file.split('.')[0] == img_name.split('.')[0] for file in patches)):
+                    # Patches already exist for this WSI, so skip to the next
+                    print('Patches for', img_name, 'already exist in', set + ' directory. Skipped extracting patches.' )
+                    return []
             
-        print('Extracting patches for:', pathology_number)
+        print('Extracting patches for:', img_name)
 
         # Load the WSI image
         wsi_img = openslide.OpenSlide(wsi_path)
 
         # Retrieve the base magnification from the WSI metadata
-        base_magnification = misc.get_base_magnification(wsi_img, pathology_number)
+        base_magnification = misc.get_base_magnification(wsi_img, img_name)
         if base_magnification is None:
-            print('Base magnification metadata for', pathology_number, 'is missing. Skipped extracting patches.' )
+            print('Base magnification metadata for', img_name, 'is missing. Skipped extracting patches.' )
             return []
 
         # Calculate the patch size for the target magnification
@@ -181,7 +179,7 @@ class PatchDataset(Dataset):
             tissue_mask = td.generate_mask(level = best_level, return_mask=True)
 
             if tissue_mask is None:
-                raise ('Could not create a tissue mask for slide:', pathology_number, '. Skipping extracting patches...' )
+                raise ('Could not create a tissue mask for slide:', img_name, '. Skipping extracting patches...' )
             
             # Convert PIL Image mask to numpy array 
             roi_mask = np.array(tissue_mask)
@@ -200,7 +198,7 @@ class PatchDataset(Dataset):
             for patch_coords in patches_coords:
                 patch = patch_coords['patch']
                 coord = patch_coords['coord']
-                patch_id = f"{pathology_number}_{patch_index}"  # NOTE: Changing patch file name format requires changing extracting patch name in ClassificationWSI.py
+                patch_id = f"{img_name.split('.')[0]}_{patch_index}"  # NOTE: Changing patch file name format requires changing extracting patch name in Classification_patches.py and directory_patch_dataset.py
 
                 patches.append(patch)
                 all_coords.append({'patch_id': patch_id, 'X': coord[0], 'Y': coord[1]})
@@ -212,7 +210,7 @@ class PatchDataset(Dataset):
             # Save coordinates to an Excel file
             new_coords_df = pd.DataFrame(all_coords)
 
-            # If there was already a coords file, it would've been deleted in __init__
+            # If there was already a coords file, it would've been deleted in init
             # So if a coords file exists, it would be for previously processed WSIs, so we can safely add to it
             if os.path.exists(self.coords_file_path):
                 existing_coords_df = pd.read_excel(self.coords_file_path)
