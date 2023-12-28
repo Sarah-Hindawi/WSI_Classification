@@ -1,12 +1,12 @@
+import config as c
 import pandas as pd
 import numpy as np
 import xgboost as xgb
+import classification_wsi
 from catboost import CatBoostClassifier
 from sklearn.metrics import log_loss
 from sklearn.metrics import accuracy_score, log_loss
 
-import config as c
-import classification_wsi
 
 def classify_multimodal_features(x_train, y_train, x_valid, y_valid, x_test, y_test):
 
@@ -26,7 +26,7 @@ def classify_multimodal_features(x_train, y_train, x_valid, y_valid, x_test, y_t
     valid_predictions = clf.predict_proba(valid_predictions[len(x_train):len(x_train)+len(x_valid)])
     print(f"Log loss on validation set: {log_loss(y_valid, valid_predictions):.3f}")
  
-    # clf.save_model("catboost_model.cbm")
+    clf.save_model("catboost_model.cbm")
 
 def train_two_models(x_train_wsi, x_train_clinical, y_train, x_valid_wsi, x_valid_clinical, y_valid):
     

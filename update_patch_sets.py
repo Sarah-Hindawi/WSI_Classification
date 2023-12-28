@@ -1,10 +1,9 @@
 import os
 import time
-import openpyxl
-import pandas as pd
-
 import misc
 import config
+import openpyxl
+import pandas as pd
 from patch_dataset import PatchDataset
 
 def add_patches(wsi_paths, coords_file_path=config.COORDS_FILE_NAME, annotations=None, max_num_patches=None, save_dir=config.TEST_PATCHES, remove_coords = False):
@@ -41,6 +40,7 @@ def remove_patches(wsi_file):
 
     print("Completed removing patches.")
 
+
 def move_patches(sheet_path, source_folder, destination_folder, separator=" "):
     """Move files from the source folder to the destination folder based on the file names listed in sheet_path. 
     Important: ALL patches of the same WSI must be moved to the destension folder.
@@ -67,6 +67,7 @@ def move_patches(sheet_path, source_folder, destination_folder, separator=" "):
 
     workbook.close()
 
+
 def find_patches(wsi_id):
     """Find patches of the specified WSIs in either train, validation, and test sets."""
 
@@ -83,37 +84,67 @@ def find_patches(wsi_id):
     print("Completed searching for patches.")
 
 
-def get_slides_stats_from_dir(datasets, labels_file, columns=['histology'], display_results=False):
+def get_slides_distribution(datasets):
+    """Returns the distribution of the slides in the specified dataset."""
+
+    slides = set()
+    patches_in_set = os.listdir(dataset)
+
+    for dataset in datasets:
+        for patch in patches_in_set:
+            slide = patch.split('_')[0]
+            slides.add(slide)
+
+        print("There are", len(slides), "slides in", dataset)
+
+    return slides
+
+
+def get_slides_stats_from_dir(datasets, labels_file, columns=['Label'], display_results=False):
     """Returns stats of all the slides in the specified dataset directories."""
 
     df = pd.read_excel(labels_file)
     labels_dict = dict(zip(df['Pathology Number'].str.strip(), df['Label'].str.strip()))
 
-    columns_dict = dict(zip(columns, [[] for _ in range(len(columns))]))
-    slides = set()
+    slides_dict = dict(zip(columns, [[] for _ in range(len(columns))]))
+    blocks_dict = dict(zip(columns, [[] for _ in range(len(columns))]))
+
+    blocks = set()
 
     for dataset in datasets:
         patches_in_set = os.listdir(dataset)
 
         for patch in patches_in_set:
-            slide = misc.get_pathology_num_from_labels(patch.split('_')[0], labels_dict, match_labels=True)
+            slide = misc.get_pathology_num_from_labels(patch.rsplit('_', 1)[0], labels_dict, match_labels=True)
+            block = patch.rsplit('_', 1)[0]
 
-            if slide not in slides and slide not in labels_dict.keys():      
+            if block not in blocks and slide not in labels_dict.keys():      
                     print(f'Warning: records were not found for {slide}.')
-            elif slide not in slides and slide in labels_dict.keys():
+            elif block not in blocks and slide in labels_dict.keys():
                 print(f'Slide: {slide}') if display_results else None
 
                 for col in columns:
                     col_value = df[df['Pathology Number'] == slide][col].iloc[0]
-                    columns_dict[col].append(col_value)
+                    slides_dict[col].append(col_value)
                     print(f'{col}: {col_value}') if display_results else None
                 
-            slides.add(slide)
+            blocks.add(block)
 
-        print("There are", len(slides), "slides in", dataset)
-        slides.clear()
+        print("There are", len(blocks), "slides in", dataset)
 
-    return columns_dict
+        # Group the slides by the label and count the frequency of each group
+        df = pd.DataFrame(slides_dict)
+        df = df.groupby(columns[0]).size().reset_index(name='counts')
+        print(df)
+
+        df = pd.DataFrame(blocks_dict)
+        df = df.groupby(columns[0]).size().reset_index(name='counts')
+        print(df)
+
+        blocks.clear()
+
+    return slides_dict
+
 
 def get_slides_stats_from_list(slide_list, labels_file, columns=['histology'], display_results=False):
     """Returns stats of the slides in the specified list."""
@@ -136,13 +167,15 @@ def get_slides_stats_from_list(slide_list, labels_file, columns=['histology'], d
 
     return columns_dict
 
+
 def main():
 
-    columns = ['histology', 'Pathology Number']
-    column_values = get_slides_stats_from_dir([config.TEST_PATCHES], config.LABELS_PATH, columns)
+    columns = ['Label', 'Pathology Number', 'histology', 'molecular']
+    column_values = get_slides_stats_from_dir([config.VALID_PATCHES], config.LABELS_PATH, columns, True)
 
-    plot_col = 'histology'
-    misc.save_stats_plots(column_values[plot_col], config.STATS_PLOT_PATH, title=plot_col)
+    plot_col = 'molecular'
+    misc.save_stats_plots(column_values[plot_col], config.STATS_PLOT_PATH, title=plot_col, log_scale=False)
+
 
 if __name__ == '__main__':
     main()
