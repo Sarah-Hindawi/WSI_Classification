@@ -18,77 +18,73 @@ ANNOTATIONS_PATH = os.path.join(LGG_WSI_PATH, 'annotations')
 INFER_WSI_PATH = os.path.join(WSI_PARENT_PATH, 'inference')
 
 PATCHES_PATH = os.path.join(PARENT_PATH, 'patches')
-VALIDATE_PATCHES_PATH = os.path.join(PATCHES_PATH, 'validate_patches')
-
-
-counter = '10x_subtype5' # Update it when creating a differnet version of the same files instead of overwritting them
+VALIDATE_PATCHES_PATH = os.path.join(FILES_PATH, 'validate_patches')
 
 # Files generated in patch_extraction
-TRAIN_PATCHES = os.path.join(PATCHES_PATH, 'train_patches' + counter)
-VALID_PATCHES = os.path.join(PATCHES_PATH, 'valid_patches' + counter)
-TEST_PATCHES = os.path.join(PATCHES_PATH, 'test_patches' + counter)
-INFER_PATCHES = os.path.join(PATCHES_PATH, 'inference_patches' + counter) # Generated in infer_wsi.py
-COORDS_FILE_NAME = os.path.join(FILES_PATH, 'patches_coords'+counter+'.xlsx')
-COORDS_INFER_FILE_NAME = os.path.join(FILES_PATH, 'patches_coords_infer'+counter+'.xlsx') # Generated in infer_wsi.py
+TRAIN_PATCHES = os.path.join(PATCHES_PATH, 'train_patches')
+VALID_PATCHES = os.path.join(PATCHES_PATH, 'valid_patches')
+TEST_PATCHES = os.path.join(PATCHES_PATH, 'test_patches')
+INFER_PATCHES = os.path.join(PATCHES_PATH, 'inference_patches') # Generated in infer_wsi.py
+COORDS_FILE_NAME = os.path.join(FILES_PATH, 'patches_coords.xlsx')
+COORDS_INFER_FILE_NAME = os.path.join(FILES_PATH, 'patches_coords_infer.xlsx') # Generated in infer_wsi.py
 
 # Files generated in classification_patches
 dropout_rate = 0.5
-counter = '_drop' + str(dropout_rate * 100) +"_no_weight" + counter
 
 WEIGHTS_PATH = os.path.join(FILES_PATH, 'weights.pth') # Update for transfer learning from another weights file
-BEST_MODEL_PATH = os.path.join(FILES_PATH, 'best_model' + counter + '.pth')
-BEST_MODEL_VALIDATE_PATCHES_PATH = os.path.join(FILES_PATH, 'best_model_validate_patches' + counter + '.pth')
+BEST_MODEL_PATH = os.path.join(FILES_PATH, 'best_model.pth')
+BEST_MODEL_VALIDATE_PATCHES_PATH = os.path.join(FILES_PATH, 'best_model_validate_patches.pth')
 
-TRAIN_PREDICTIONS = os.path.join(FILES_PATH, 'train_predictions' + counter + '.xlsx')
-TRAIN_FEATURES = os.path.join(FILES_PATH, 'train_features' + counter + '.pkl')
+TRAIN_PREDICTIONS = os.path.join(FILES_PATH, 'train_predictions.xlsx')
+TRAIN_FEATURES = os.path.join(FILES_PATH, 'train_features.pkl')
 
-VALID_PREDICTIONS = os.path.join(FILES_PATH, 'valid_predictions' + counter + '.xlsx')
-VALID_FEATURES = os.path.join(FILES_PATH, 'valid_features' + counter + '.pkl')
+VALID_PREDICTIONS = os.path.join(FILES_PATH, 'valid_predictions.xlsx')
+VALID_FEATURES = os.path.join(FILES_PATH, 'valid_features.pkl')
 
-TEST_PREDICTIONS = os.path.join(FILES_PATH, 'test_predictions' + counter + '.xlsx')
-TEST_FEATURES = os.path.join(FILES_PATH, 'test_features' + counter + '.pkl')
+TEST_PREDICTIONS = os.path.join(FILES_PATH, 'test_predictions.xlsx')
+TEST_FEATURES = os.path.join(FILES_PATH, 'test_features.pkl')
 
-INFER_PREDICTIONS = os.path.join(FILES_PATH, 'infer_predictions' + counter + '.xlsx')
-INFER_FEATURES = os.path.join(FILES_PATH, 'infer_features' + counter + '.pkl')
+INFER_PREDICTIONS = os.path.join(FILES_PATH, 'infer_predictions.xlsx')
+INFER_FEATURES = os.path.join(FILES_PATH, 'infer_features.pkl')
 
-ROC_PLOT_PATH = os.path.join(FILES_PATH, 'roc_plot' + counter + '.png')
+ROC_PLOT_PATH = os.path.join(FILES_PATH, 'roc_plot.png')
 
 # Files generated in aggregation_features
-TRAIN_AGG_FV = os.path.join(FILES_PATH, 'train_feature_vector'+counter+'.pkl')
-VALID_AGG_FV = os.path.join(FILES_PATH, 'valid_feature_vector'+counter+'.pkl')
-TEST_AGG_FV = os.path.join(FILES_PATH, 'test_feature_vector'+counter+'.pkl')
+TRAIN_AGG_FV = os.path.join(FILES_PATH, 'train_feature_vector.pkl')
+VALID_AGG_FV = os.path.join(FILES_PATH, 'valid_feature_vector.pkl')
+TEST_AGG_FV = os.path.join(FILES_PATH, 'test_feature_vector.pkl')
 
-TRAIN_WSI_CLASSIFICATION = os.path.join(FILES_PATH, 'train_WSI_classification'+counter+'.xlsx')
-VALID_WSI_CLASSIFICATION = os.path.join(FILES_PATH, 'valid_WSI_classification'+counter+'.xlsx')
-TEST_WSI_CLASSIFICATION = os.path.join(FILES_PATH, 'test_WSI_classification'+counter+'.xlsx')
+TRAIN_WSI_CLASSIFICATION = os.path.join(FILES_PATH, 'train_WSI_classification.xlsx')
+VALID_WSI_CLASSIFICATION = os.path.join(FILES_PATH, 'valid_WSI_classification.xlsx')
+TEST_WSI_CLASSIFICATION = os.path.join(FILES_PATH, 'test_WSI_classification.xlsx')
 
 # Files generated in classification_wsi
-RANDOM_FOREST_MODEL = os.path.join(FILES_PATH, 'best_random_forest'+counter+'.pkl')
-SVM_MODEL = os.path.join(FILES_PATH, 'best_svm'+counter+'.pkl')
-XGBOOST_MODEL = os.path.join(FILES_PATH, 'best_xgboost'+counter+'.pkl')
+RANDOM_FOREST_MODEL = os.path.join(FILES_PATH, 'best_random_forest.pkl')
+SVM_MODEL = os.path.join(FILES_PATH, 'best_svm.pkl')
+XGBOOST_MODEL = os.path.join(FILES_PATH, 'best_xgboost.pkl')
 
-KMEANS_CLUSTER_PATH = os.path.join(FILES_PATH, 'kmeans_cluster'+counter+'.png')
-DBSCAN_CLUSTER_PATH = os.path.join(FILES_PATH, 'dbscan_cluster'+counter+'.png')
-PCA_TRAIN_LABEL_PATH = os.path.join(FILES_PATH, 'pca_train'+counter+'.png')
-PCA_TEST_LABEL_PATH = os.path.join(FILES_PATH, 'pca_test'+counter+'.png')
-UMAP_TRAIN_LABEL_PATH = os.path.join(FILES_PATH, 'umap_train'+counter+'.png')
-UMAP_TEST_LABEL_PATH = os.path.join(FILES_PATH, 'umap_test'+counter+'.png')
-CONFUSION_MATRIX_PATH = os.path.join(FILES_PATH, 'confusion_matrix'+counter+'.png')
+KMEANS_CLUSTER_PATH = os.path.join(FILES_PATH, 'kmeans_cluster.png')
+DBSCAN_CLUSTER_PATH = os.path.join(FILES_PATH, 'dbscan_cluster.png')
+PCA_TRAIN_LABEL_PATH = os.path.join(FILES_PATH, 'pca_train.png')
+PCA_TEST_LABEL_PATH = os.path.join(FILES_PATH, 'pca_test.png')
+UMAP_TRAIN_LABEL_PATH = os.path.join(FILES_PATH, 'umap_train.png')
+UMAP_TEST_LABEL_PATH = os.path.join(FILES_PATH, 'umap_test.png')
+CONFUSION_MATRIX_PATH = os.path.join(FILES_PATH, 'confusion_matrix.png')
 
 # Files generated in infer_wsi
-INFERENCE_PREDICTIONS = os.path.join(FILES_PATH, 'inference_predictions'+counter+'.xlsx')
-INFERENCE_FEATURES = os.path.join(FILES_PATH, 'inference_features'+counter+'.pkl')
+INFERENCE_PREDICTIONS = os.path.join(FILES_PATH, 'inference_predictions.xlsx')
+INFERENCE_FEATURES = os.path.join(FILES_PATH, 'inference_features.pkl')
 
 # Files generated in aggregation_multimodal_features
-TRAIN_AGG_MULTI_FV = os.path.join(FILES_PATH, 'train_feature_vector_mulit'+counter+'.pkl')
-VALID_AGG_MULTI_FV = os.path.join(FILES_PATH, 'valid_feature_vector_mulit'+counter+'.pkl')
-TEST_AGG_MULTI_FV = os.path.join(FILES_PATH, 'test_feature_vector_mulit'+counter+'.pkl')
+TRAIN_AGG_MULTI_FV = os.path.join(FILES_PATH, 'train_feature_vector_mulit.pkl')
+VALID_AGG_MULTI_FV = os.path.join(FILES_PATH, 'valid_feature_vector_mulit.pkl')
+TEST_AGG_MULTI_FV = os.path.join(FILES_PATH, 'test_feature_vector_mulit.pkl')
 
 # Files generated in visualize_predictions
-HEATMAPS_PATH =  os.path.join(FILES_PATH, 'heatmaps'+counter)
+HEATMAPS_PATH =  os.path.join(FILES_PATH, 'heatmaps')
 
 # Files generated in misc
-STATS_PLOT_PATH = os.path.join(FILES_PATH, 'stats'+counter+'.png')
+STATS_PLOT_PATH = os.path.join(FILES_PATH, 'stats.png')
 
 # ---------------------------------------------------------------------------
 # LISTS
